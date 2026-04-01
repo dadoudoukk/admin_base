@@ -1,0 +1,1538 @@
+import time
+from typing import Any, Dict, List, Optional, Set, Union
+
+import jwt
+from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from passlib.context import CryptContext
+from pydantic import BaseModel, Field
+from sqlalchemy.orm import Session
+
+from core.database import SessionLocal
+from models import SysDictData, SysDictType, SysMenu, SysRole, SysRoleMenu, SysUser
+
+# ========== JWT ==========
+SECRET_KEY = "geeker-admin-dev-secret-change-me"
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_SECONDS = 60 * 60 * 24  # 24 小时
+
+DEFAULT_AVATAR = "https://api.dicebear.com/7.x/avataaars/svg?seed=admin"
+
+# ========== 密码（与 init_db 一致：bcrypt）==========
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+def make_response(code: int, data: Any = None, msg: str = "success") -> Dict[str, Any]:
+    return {"code": code, "data": data, "msg": msg}
+
+
+def create_access_token(user_id: int) -> str:
+    """生成 JWT：payload 包含 user_id、iat、exp（过期时间）。"""
+    now = int(time.time())
+    payload = {
+        "user_id": user_id,
+        "iat": now,
+        "exp": now + ACCESS_TOKEN_EXPIRE_SECONDS,
+    }
+    return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+
+
+def decode_access_token(token: str) -> Optional[dict]:
+    try:
+        return jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+    except jwt.PyJWTError:
+        return None
+
+
+def require_user(x_access_token: Optional[str]) -> Optional[dict]:
+    if not x_access_token:
+        return None
+    claims = decode_access_token(x_access_token)
+    if not claims:
+        return None
+    user_id = claims.get("user_id")
+    if user_id is None:
+        return None
+
+    db = SessionLocal()
+    try:
+        user = db.query(SysUser).filter(SysUser.id == user_id).first()
+        if not user or not user.is_active:
+            return None
+        role_name = ""
+        role_codes: List[str] = []
+        if user.roles:
+            role_name = user.roles[0].name
+            role_codes = [r.code for r in user.roles]
+        return {
+            "user_id": user.id,
+            "username": user.username,
+            "avatar": user.avatar,
+            "roleName": role_name,
+            "roles": role_codes,
+            "is_superuser": user.is_superuser,
+        }
+    finally:
+        db.close()
+
+
+def fetch_button_menus_for_user(db: Session, ctx: dict) -> List[SysMenu]:
+    q = db.query(SysMenu).filter(SysMenu.status == True).filter(SysMenu.menu_type == "BUTTON")  # noqa: E712
+    if ctx.get("is_superuser") or "admin" in (ctx.get("roles") or []) or ctx.get("username") == "admin":
+        return q.order_by(SysMenu.sort.asc(), SysMenu.id.asc()).all()
+
+    uid = ctx["user_id"]
+    user = db.query(SysUser).filter(SysUser.id == uid).first()
+    if not user:
+        return []
+
+    merged: Dict[int, SysMenu] = {}
+    for role in user.roles:
+        for m in role.menus:
+            if m.status and m.menu_type == "BUTTON":
+                merged[m.id] = m
+    out = list(merged.values())
+    out.sort(key=lambda m: (m.sort, m.id))
+    return out
+
+
+def _button_code(m: SysMenu) -> str:
+    return ((m.name or "").strip() or (m.permission or "").strip() or (m.path or "").strip())
+
+
+def _button_owner_page_name(m: SysMenu) -> str:
+    cur: Optional[SysMenu] = m.parent
+    while cur:
+        if cur.menu_type in ("MENU", "CATALOG") and (cur.name or "").strip():
+            return cur.name.strip()
+        cur = cur.parent
+    return "global"
+
+
+def build_auth_button_map(rows: List[SysMenu]) -> Dict[str, List[str]]:
+    out: Dict[str, List[str]] = {}
+    for m in rows:
+        code = _button_code(m)
+        if not code:
+            continue
+        page_name = _button_owner_page_name(m)
+        out.setdefault(page_name, [])
+        if code not in out[page_name]:
+            out[page_name].append(code)
+    return out
+
+
+def build_auth_button_codes(rows: List[SysMenu]) -> List[str]:
+    out: List[str] = []
+    for m in rows:
+        code = _button_code(m)
+        if code and code not in out:
+            out.append(code)
+    return out
+
+
+def require_permission(permission_code: str):
+    def _checker(
+        x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
+        db: Session = Depends(get_db),
+    ) -> bool:
+        ctx = require_user(x_access_token)
+        if not ctx:
+            raise HTTPException(status_code=401, detail="登录过期，请重新登录")
+        rows = fetch_button_menus_for_user(db, ctx)
+        codes = set(build_auth_button_codes(rows))
+        if permission_code not in codes:
+            raise HTTPException(status_code=403, detail="无权限访问")
+        return True
+
+    return _checker
+
+
+class LoginBody(BaseModel):
+    username: str = Field(..., min_length=1, description="登录账号")
+    password: str = Field(..., min_length=1, description="明文密码")
+
+
+class UserListBody(BaseModel):
+    pageNum: int = Field(1, ge=1, description="当前页码")
+    pageSize: int = Field(10, ge=1, le=200, description="每页条数")
+    username: Optional[str] = Field(None, description="账号模糊搜索")
+    gender: Optional[str] = Field(None, description="性别字典值，如 1/2/3")
+
+
+class UserAddBody(BaseModel):
+    username: str = Field(..., min_length=1, description="登录账号")
+    password: str = Field(..., min_length=1, description="明文密码")
+    nickname: Optional[str] = Field(None, description="昵称")
+    email: Optional[str] = Field(None, description="邮箱")
+    phone: Optional[str] = Field(None, description="手机")
+    gender: Optional[str] = Field("3", description="性别字典值，默认 3 未知")
+    roleIds: List[int] = Field(default_factory=list, description="角色 ID 列表")
+
+
+class UserDeleteBody(BaseModel):
+    id: List[Union[str, int]] = Field(..., min_length=1, description="待删除用户 ID 列表")
+
+
+class UserEditBody(BaseModel):
+    id: Union[str, int] = Field(..., description="用户 ID")
+    username: Optional[str] = Field(None, description="登录账号")
+    nickname: Optional[str] = Field(None, description="昵称")
+    email: Optional[str] = Field(None, description="邮箱")
+    phone: Optional[str] = Field(None, description="手机")
+    gender: Optional[str] = Field(None, description="性别字典值")
+    roleIds: List[int] = Field(default_factory=list, description="角色 ID 列表")
+
+
+class UserChangeStatusBody(BaseModel):
+    id: Union[str, int] = Field(..., description="用户 ID")
+    status: int = Field(..., description="1 启用 0 禁用")
+
+
+class UserChangePasswordBody(BaseModel):
+    oldPassword: str = Field(..., min_length=1, description="旧密码")
+    newPassword: str = Field(..., min_length=1, description="新密码")
+
+
+class RoleListBody(BaseModel):
+    pageNum: int = Field(1, ge=1)
+    pageSize: int = Field(10, ge=1, le=200)
+    roleName: Optional[str] = Field(None, description="角色名称模糊")
+    roleCode: Optional[str] = Field(None, description="角色标识模糊")
+
+
+class RoleAddBody(BaseModel):
+    roleName: str = Field(..., min_length=1, description="角色名称")
+    roleCode: str = Field(..., min_length=1, description="角色标识")
+    remark: Optional[str] = Field(None, description="备注")
+
+
+class RoleEditBody(BaseModel):
+    id: Union[str, int] = Field(..., description="角色 ID")
+    roleName: str = Field(..., min_length=1)
+    roleCode: str = Field(..., min_length=1)
+    remark: Optional[str] = Field(None, description="备注")
+
+
+class RoleDeleteBody(BaseModel):
+    id: List[Union[str, int]] = Field(..., min_length=1, description="角色 ID 列表")
+
+
+class RoleMenuIdsBody(BaseModel):
+    roleId: Union[str, int] = Field(..., description="角色 ID")
+
+
+class RoleAssignMenuBody(BaseModel):
+    roleId: Union[str, int] = Field(..., description="角色 ID")
+    menuIds: List[int] = Field(default_factory=list, description="菜单 ID 列表")
+
+
+_MENU_TYPES = frozenset({"CATALOG", "MENU", "BUTTON"})
+
+
+class MenuAddBody(BaseModel):
+    parentId: Optional[int] = Field(None, description="父级菜单 ID，根节点不传")
+    menuType: str = Field("MENU", description="CATALOG / MENU / BUTTON")
+    name: str = Field(..., min_length=1, description="路由 name")
+    title: str = Field(..., min_length=1, description="显示标题")
+    path: Optional[str] = None
+    component: Optional[str] = None
+    icon: Optional[str] = None
+    sort: int = 0
+    remark: Optional[str] = None
+
+
+class MenuEditBody(BaseModel):
+    id: Union[str, int]
+    parentId: Optional[int] = None
+    menuType: Optional[str] = None
+    name: Optional[str] = None
+    title: Optional[str] = None
+    path: Optional[str] = None
+    component: Optional[str] = None
+    icon: Optional[str] = None
+    sort: Optional[int] = None
+    remark: Optional[str] = None
+    status: Optional[bool] = None
+
+
+class MenuDeleteBody(BaseModel):
+    id: Union[str, int] = Field(..., description="菜单 ID")
+
+
+class DictTypeListBody(BaseModel):
+    pageNum: int = Field(1, ge=1, description="当前页码")
+    pageSize: int = Field(10, ge=1, le=200, description="每页条数")
+    dictName: Optional[str] = Field(None, description="字典名称模糊搜索")
+    dictCode: Optional[str] = Field(None, description="字典编码模糊搜索")
+
+
+class DictTypeAddBody(BaseModel):
+    dictName: str = Field(..., min_length=1, description="字典名称")
+    dictCode: str = Field(..., min_length=1, description="字典编码")
+    status: Optional[bool] = Field(True, description="状态")
+    remark: Optional[str] = Field(None, description="备注")
+
+
+class DictTypeEditBody(BaseModel):
+    id: Union[str, int] = Field(..., description="字典类型 ID")
+    dictName: str = Field(..., min_length=1, description="字典名称")
+    dictCode: str = Field(..., min_length=1, description="字典编码")
+    status: Optional[bool] = Field(True, description="状态")
+    remark: Optional[str] = Field(None, description="备注")
+
+
+class DictTypeDeleteBody(BaseModel):
+    id: List[Union[str, int]] = Field(..., min_length=1, description="待删除字典类型 ID 列表")
+
+
+class DictTypeChangeStatusBody(BaseModel):
+    id: Union[str, int] = Field(..., description="字典类型 ID")
+    status: Union[bool, int] = Field(..., description="状态（true/false 或 1/0）")
+
+
+class DictDataListBody(BaseModel):
+    pageNum: int = Field(1, ge=1, description="当前页码")
+    pageSize: int = Field(10, ge=1, le=200, description="每页条数")
+    dictCode: str = Field(..., min_length=1, description="字典编码（必填）")
+    dictLabel: Optional[str] = Field(None, description="字典标签模糊搜索")
+    dictValue: Optional[str] = Field(None, description="字典值模糊搜索")
+
+
+class DictDataAddBody(BaseModel):
+    dictCode: str = Field(..., min_length=1, description="字典编码")
+    dictLabel: str = Field(..., min_length=1, description="字典标签")
+    dictValue: str = Field(..., min_length=1, description="字典值")
+    sort: int = Field(0, description="排序")
+    status: Optional[bool] = Field(True, description="状态")
+    remark: Optional[str] = Field(None, description="备注")
+
+
+class DictDataEditBody(BaseModel):
+    id: Union[str, int] = Field(..., description="字典数据 ID")
+    dictCode: str = Field(..., min_length=1, description="字典编码")
+    dictLabel: str = Field(..., min_length=1, description="字典标签")
+    dictValue: str = Field(..., min_length=1, description="字典值")
+    sort: int = Field(0, description="排序")
+    status: Optional[bool] = Field(True, description="状态")
+    remark: Optional[str] = Field(None, description="备注")
+
+
+class DictDataDeleteBody(BaseModel):
+    id: List[Union[str, int]] = Field(..., min_length=1, description="待删除字典数据 ID 列表")
+
+
+class DictDataChangeStatusBody(BaseModel):
+    id: Union[str, int] = Field(..., description="字典数据 ID")
+    status: Union[bool, int] = Field(..., description="状态（true/false 或 1/0）")
+
+
+def menu_list_fallback() -> List[dict]:
+    """数据库无可用菜单时的兜底树（至少含首页，保证能进系统）。"""
+    return [
+        {
+            "path": "/home/index",
+            "name": "home",
+            "component": "/home/index",
+            "meta": {
+                "icon": "HomeFilled",
+                "title": "首页",
+                "isLink": "",
+                "isHide": False,
+                "isFull": False,
+                "isAffix": True,
+                "isKeepAlive": True,
+            },
+        },
+        {
+            "path": "/dataScreen",
+            "name": "dataScreen",
+            "component": "/dataScreen/index",
+            "meta": {
+                "icon": "Histogram",
+                "title": "数据大屏",
+                "isLink": "",
+                "isHide": False,
+                "isFull": True,
+                "isAffix": False,
+                "isKeepAlive": True,
+            },
+        },
+    ]
+
+
+def _filter_empty_catalogs(rows: List[SysMenu]) -> List[SysMenu]:
+    """去掉无 component 且无子节点的 CATALOG，避免动态路由无法挂载。"""
+    if not rows:
+        return rows
+    parent_ids_with_child: Set[Optional[int]] = {m.parent_id for m in rows if m.parent_id is not None}
+    out: List[SysMenu] = []
+    for m in rows:
+        if m.menu_type == "CATALOG" and not (m.component or "").strip():
+            if m.id not in parent_ids_with_child:
+                continue
+        out.append(m)
+    return out
+
+
+def _menu_row_to_node(m: SysMenu) -> Dict[str, Any]:
+    meta = {
+        "icon": m.icon or "",
+        "title": m.title,
+        "isLink": m.is_link or "",
+        "isHide": m.is_hide,
+        "isFull": m.is_full,
+        "isAffix": m.is_affix,
+        "isKeepAlive": m.is_keep_alive,
+    }
+    node: Dict[str, Any] = {
+        "path": m.path or "",
+        "name": m.name,
+        "component": (m.component or "").strip(),
+        "meta": meta,
+    }
+    return node
+
+
+def build_menu_tree(rows: List[SysMenu]) -> List[dict]:
+    """将平铺菜单行递归为父子嵌套结构（按 sort、id 排序）。"""
+    if not rows:
+        return []
+
+    by_parent: Dict[Optional[int], List[SysMenu]] = {}
+    for m in rows:
+        by_parent.setdefault(m.parent_id, []).append(m)
+    for lst in by_parent.values():
+        lst.sort(key=lambda x: (x.sort, x.id))
+
+    def walk(parent_id: Optional[int]) -> List[dict]:
+        items = by_parent.get(parent_id, [])
+        out: List[dict] = []
+        for m in items:
+            node = _menu_row_to_node(m)
+            children = walk(m.id)
+            if children:
+                node["children"] = children
+            out.append(node)
+        return out
+
+    return walk(None)
+
+
+def _menu_node_all_tree(m: SysMenu) -> Dict[str, Any]:
+    """权限树节点：带 id、label，供前端 el-tree / 菜单管理表格使用。"""
+    node = _menu_row_to_node(m)
+    node["id"] = m.id
+    node["label"] = m.title
+    node["menuType"] = m.menu_type
+    node["parentId"] = m.parent_id
+    node["sort"] = m.sort
+    node["remark"] = m.remark or ""
+    return node
+
+
+def build_menu_tree_all(rows: List[SysMenu]) -> List[dict]:
+    """完整菜单树（含目录/菜单/按钮等），不剔除空目录。"""
+    if not rows:
+        return []
+
+    by_parent: Dict[Optional[int], List[SysMenu]] = {}
+    for m in rows:
+        by_parent.setdefault(m.parent_id, []).append(m)
+    for lst in by_parent.values():
+        lst.sort(key=lambda x: (x.sort, x.id))
+
+    def walk(parent_id: Optional[int]) -> List[dict]:
+        items = by_parent.get(parent_id, [])
+        out: List[dict] = []
+        for m in items:
+            node = _menu_node_all_tree(m)
+            children = walk(m.id)
+            if children:
+                node["children"] = children
+            out.append(node)
+        return out
+
+    return walk(None)
+
+
+def fetch_menu_rows_for_user(db: Session, ctx: dict) -> List[SysMenu]:
+    """超级管理员 / admin 角色：查全部有效菜单；否则按角色关联菜单并补全父级链。"""
+    base_q = (
+        db.query(SysMenu)
+        .filter(SysMenu.status == True)  # noqa: E712
+        .filter(SysMenu.menu_type.in_(["CATALOG", "MENU"]))
+    )
+
+    if ctx.get("is_superuser") or "admin" in (ctx.get("roles") or []) or ctx.get("username") == "admin":
+        return base_q.order_by(SysMenu.sort.asc(), SysMenu.id.asc()).all()
+
+    uid = ctx["user_id"]
+    user = db.query(SysUser).filter(SysUser.id == uid).first()
+    if not user:
+        return []
+
+    all_menus = base_q.all()
+    id_to_menu = {m.id: m for m in all_menus}
+
+    seed_ids: Set[int] = set()
+    for role in user.roles:
+        for m in role.menus:
+            if m.status and m.menu_type in ("CATALOG", "MENU"):
+                seed_ids.add(m.id)
+
+    expanded: Set[int] = set()
+
+    def add_with_parents(mid: int) -> None:
+        if mid in expanded or mid not in id_to_menu:
+            return
+        obj = id_to_menu[mid]
+        expanded.add(mid)
+        if obj.parent_id:
+            add_with_parents(obj.parent_id)
+
+    for sid in list(seed_ids):
+        add_with_parents(sid)
+
+    rows = [id_to_menu[i] for i in expanded]
+    rows.sort(key=lambda m: (m.sort, m.id))
+    return rows
+
+
+def auth_button_list_static() -> Dict[str, List[str]]:
+    return {}
+
+
+def _dict_data_row(d: SysDictData) -> Dict[str, Any]:
+    created = d.created_at.strftime("%Y-%m-%d %H:%M:%S") if d.created_at else ""
+    updated = d.updated_at.strftime("%Y-%m-%d %H:%M:%S") if d.updated_at else ""
+    return {
+        "id": str(d.id),
+        "dictCode": d.dict_code,
+        "dictLabel": d.dict_label,
+        "dictValue": d.dict_value,
+        "sort": d.sort,
+        "status": d.status,
+        "remark": d.remark or "",
+        "createdAt": created,
+        "updatedAt": updated,
+    }
+
+
+def _dict_type_row(d: SysDictType) -> Dict[str, Any]:
+    created = d.created_at.strftime("%Y-%m-%d %H:%M:%S") if d.created_at else ""
+    updated = d.updated_at.strftime("%Y-%m-%d %H:%M:%S") if d.updated_at else ""
+    return {
+        "id": str(d.id),
+        "dictName": d.dict_name,
+        "dictCode": d.dict_code,
+        "status": 1 if d.status else 0,
+        "remark": d.remark or "",
+        "createTime": created,
+        "updateTime": updated,
+    }
+
+
+def _user_row(u: SysUser) -> Dict[str, Any]:
+    """与 Geeker ProTable / ResUserList 对齐的字段（缺省字段补空值）。"""
+    created = u.created_at.strftime("%Y-%m-%d %H:%M:%S") if u.created_at else ""
+    role_ids = [r.id for r in (u.roles or [])]
+    role_names = [r.name for r in (u.roles or []) if (r.name or "").strip()]
+    return {
+        "id": str(u.id),
+        "username": u.username,
+        "nickname": u.nickname or "",
+        "status": 1 if u.is_active else 0,
+        "createTime": created,
+        "gender": str(u.gender) if u.gender else "3",
+        "roleIds": role_ids,
+        "roleNames": role_names,
+        "idCard": "",
+        "email": u.email or "",
+        "phone": u.phone or "",
+        "address": "",
+        "avatar": u.avatar or "",
+        "photo": [],
+        "user": {"detail": {"age": 0}},
+    }
+
+
+geeker_router = APIRouter(prefix="/geeker")
+api_router = APIRouter(prefix="/api")
+
+
+@geeker_router.post("/login")
+@api_router.post("/login")
+def login(body: LoginBody, db: Session = Depends(get_db)) -> Dict[str, Any]:
+    username = body.username.strip()
+    user = db.query(SysUser).filter(SysUser.username == username).first()
+    if not user:
+        return make_response(500, data={}, msg="用户名或密码错误")
+    if not pwd_context.verify(body.password, user.password):
+        return make_response(500, data={}, msg="用户名或密码错误")
+
+    token = create_access_token(user.id)
+    return make_response(200, data={"access_token": token}, msg="登录成功")
+
+
+@geeker_router.get("/menu/list")
+@api_router.get("/menu/list")
+def menu_list(
+    x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    ctx = require_user(x_access_token)
+    if not ctx:
+        return make_response(401, data=[], msg="登录过期，请重新登录")
+
+    rows = fetch_menu_rows_for_user(db, ctx)
+    rows = _filter_empty_catalogs(rows)
+    tree = build_menu_tree(rows)
+    if not tree:
+        tree = menu_list_fallback()
+    return make_response(200, data=tree, msg="success")
+
+
+@geeker_router.get("/auth/buttons")
+@api_router.get("/auth/buttons")
+def auth_buttons(
+    x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    ctx = require_user(x_access_token)
+    if not ctx:
+        return make_response(401, data={}, msg="登录过期，请重新登录")
+    rows = fetch_button_menus_for_user(db, ctx)
+    return make_response(200, data=build_auth_button_map(rows), msg="success")
+
+
+@geeker_router.get("/dict/data/{dict_code}")
+@api_router.get("/dict/data/{dict_code}")
+def dict_data_by_code(dict_code: str, db: Session = Depends(get_db)) -> Dict[str, Any]:
+    code = (dict_code or "").strip()
+    rows = (
+        db.query(SysDictData)
+        .filter(SysDictData.dict_code == code)
+        .filter(SysDictData.status == True)  # noqa: E712
+        .order_by(SysDictData.sort.asc(), SysDictData.id.asc())
+        .all()
+    )
+    data = [_dict_data_row(r) for r in rows]
+    return make_response(200, data=data, msg="success")
+
+
+@geeker_router.post("/dict/type/list")
+@api_router.post("/dict/type/list")
+def dict_type_list(
+    body: DictTypeListBody,
+    db: Session = Depends(get_db),
+    x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
+) -> Dict[str, Any]:
+    ctx = require_user(x_access_token)
+    if not ctx:
+        return make_response(401, data={}, msg="登录过期，请重新登录")
+
+    q = db.query(SysDictType)
+    if body.dictName and body.dictName.strip():
+        kw = f"%{body.dictName.strip()}%"
+        q = q.filter(SysDictType.dict_name.like(kw))
+    if body.dictCode and body.dictCode.strip():
+        kw = f"%{body.dictCode.strip()}%"
+        q = q.filter(SysDictType.dict_code.like(kw))
+
+    total = q.count()
+    rows = (
+        q.order_by(SysDictType.id.desc())
+        .offset((body.pageNum - 1) * body.pageSize)
+        .limit(body.pageSize)
+        .all()
+    )
+    return make_response(
+        200,
+        data={
+            "list": [_dict_type_row(r) for r in rows],
+            "pageNum": body.pageNum,
+            "pageSize": body.pageSize,
+            "total": total,
+        },
+        msg="success",
+    )
+
+
+@geeker_router.post("/dict/type/add")
+@api_router.post("/dict/type/add")
+def dict_type_add(
+    body: DictTypeAddBody,
+    db: Session = Depends(get_db),
+    x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
+) -> Dict[str, Any]:
+    ctx = require_user(x_access_token)
+    if not ctx:
+        return make_response(401, data={}, msg="登录过期，请重新登录")
+
+    dict_name = body.dictName.strip()
+    dict_code = body.dictCode.strip()
+    if db.query(SysDictType).filter(SysDictType.dict_code == dict_code).first():
+        return make_response(500, data={}, msg="字典编码已存在")
+
+    db.add(
+        SysDictType(
+            dict_name=dict_name,
+            dict_code=dict_code,
+            status=bool(body.status),
+            remark=body.remark,
+        )
+    )
+    db.commit()
+    return make_response(200, data={}, msg="新增成功")
+
+
+@geeker_router.post("/dict/type/edit")
+@api_router.post("/dict/type/edit")
+def dict_type_edit(
+    body: DictTypeEditBody,
+    db: Session = Depends(get_db),
+    x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
+) -> Dict[str, Any]:
+    ctx = require_user(x_access_token)
+    if not ctx:
+        return make_response(401, data={}, msg="登录过期，请重新登录")
+
+    did = int(body.id) if not isinstance(body.id, int) else body.id
+    row = db.query(SysDictType).filter(SysDictType.id == did).first()
+    if not row:
+        return make_response(500, data={}, msg="字典类型不存在")
+
+    dict_name = body.dictName.strip()
+    dict_code = body.dictCode.strip()
+    other = db.query(SysDictType).filter(SysDictType.dict_code == dict_code, SysDictType.id != did).first()
+    if other:
+        return make_response(500, data={}, msg="字典编码已存在")
+
+    row.dict_name = dict_name
+    row.dict_code = dict_code
+    row.status = bool(body.status)
+    row.remark = body.remark
+    db.commit()
+    return make_response(200, data={}, msg="编辑成功")
+
+
+@geeker_router.post("/dict/type/delete")
+@api_router.post("/dict/type/delete")
+def dict_type_delete(
+    body: DictTypeDeleteBody,
+    db: Session = Depends(get_db),
+    x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
+) -> Dict[str, Any]:
+    ctx = require_user(x_access_token)
+    if not ctx:
+        return make_response(401, data={}, msg="登录过期，请重新登录")
+
+    deleted = 0
+    for raw in body.id:
+        did = int(raw) if not isinstance(raw, int) else raw
+        row = db.query(SysDictType).filter(SysDictType.id == did).first()
+        if not row:
+            continue
+        db.query(SysDictData).filter(SysDictData.dict_code == row.dict_code).delete()
+        db.delete(row)
+        deleted += 1
+    if not deleted:
+        return make_response(500, data={}, msg="字典类型不存在或已删除")
+
+    db.commit()
+    return make_response(200, data={}, msg="删除成功")
+
+
+@geeker_router.post("/dict/type/changeStatus")
+@api_router.post("/dict/type/changeStatus")
+def dict_type_change_status(
+    body: DictTypeChangeStatusBody,
+    db: Session = Depends(get_db),
+    x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
+) -> Dict[str, Any]:
+    ctx = require_user(x_access_token)
+    if not ctx:
+        return make_response(401, data={}, msg="登录过期，请重新登录")
+
+    did = int(body.id) if not isinstance(body.id, int) else body.id
+    row = db.query(SysDictType).filter(SysDictType.id == did).first()
+    if not row:
+        return make_response(500, data={}, msg="字典类型不存在")
+
+    row.status = bool(body.status)
+    db.commit()
+    return make_response(200, data={}, msg="状态修改成功")
+
+
+@geeker_router.post("/dict/data/list")
+@api_router.post("/dict/data/list")
+def dict_data_list(
+    body: DictDataListBody,
+    db: Session = Depends(get_db),
+    x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
+) -> Dict[str, Any]:
+    ctx = require_user(x_access_token)
+    if not ctx:
+        return make_response(401, data={}, msg="登录过期，请重新登录")
+
+    code = body.dictCode.strip()
+    if not code:
+        return make_response(500, data={}, msg="dictCode 不能为空")
+
+    q = db.query(SysDictData).filter(SysDictData.dict_code == code)
+    if body.dictLabel and body.dictLabel.strip():
+        kw = f"%{body.dictLabel.strip()}%"
+        q = q.filter(SysDictData.dict_label.like(kw))
+    if body.dictValue and body.dictValue.strip():
+        kw = f"%{body.dictValue.strip()}%"
+        q = q.filter(SysDictData.dict_value.like(kw))
+
+    total = q.count()
+    rows = (
+        q.order_by(SysDictData.sort.asc(), SysDictData.id.asc())
+        .offset((body.pageNum - 1) * body.pageSize)
+        .limit(body.pageSize)
+        .all()
+    )
+    return make_response(
+        200,
+        data={
+            "list": [_dict_data_row(r) for r in rows],
+            "pageNum": body.pageNum,
+            "pageSize": body.pageSize,
+            "total": total,
+        },
+        msg="success",
+    )
+
+
+@geeker_router.post("/dict/data/add")
+@api_router.post("/dict/data/add")
+def dict_data_add(
+    body: DictDataAddBody,
+    db: Session = Depends(get_db),
+    x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
+) -> Dict[str, Any]:
+    ctx = require_user(x_access_token)
+    if not ctx:
+        return make_response(401, data={}, msg="登录过期，请重新登录")
+
+    code = body.dictCode.strip()
+    if not db.query(SysDictType).filter(SysDictType.dict_code == code).first():
+        return make_response(500, data={}, msg="字典类型不存在")
+    if db.query(SysDictData).filter(SysDictData.dict_code == code, SysDictData.dict_value == body.dictValue.strip()).first():
+        return make_response(500, data={}, msg="同字典编码下字典值已存在")
+
+    db.add(
+        SysDictData(
+            dict_code=code,
+            dict_label=body.dictLabel.strip(),
+            dict_value=body.dictValue.strip(),
+            sort=body.sort,
+            status=bool(body.status),
+            remark=body.remark,
+        )
+    )
+    db.commit()
+    return make_response(200, data={}, msg="新增成功")
+
+
+@geeker_router.post("/dict/data/edit")
+@api_router.post("/dict/data/edit")
+def dict_data_edit(
+    body: DictDataEditBody,
+    db: Session = Depends(get_db),
+    x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
+) -> Dict[str, Any]:
+    ctx = require_user(x_access_token)
+    if not ctx:
+        return make_response(401, data={}, msg="登录过期，请重新登录")
+
+    did = int(body.id) if not isinstance(body.id, int) else body.id
+    row = db.query(SysDictData).filter(SysDictData.id == did).first()
+    if not row:
+        return make_response(500, data={}, msg="字典数据不存在")
+
+    code = body.dictCode.strip()
+    if not db.query(SysDictType).filter(SysDictType.dict_code == code).first():
+        return make_response(500, data={}, msg="字典类型不存在")
+    other = (
+        db.query(SysDictData)
+        .filter(SysDictData.dict_code == code, SysDictData.dict_value == body.dictValue.strip(), SysDictData.id != did)
+        .first()
+    )
+    if other:
+        return make_response(500, data={}, msg="同字典编码下字典值已存在")
+
+    row.dict_code = code
+    row.dict_label = body.dictLabel.strip()
+    row.dict_value = body.dictValue.strip()
+    row.sort = body.sort
+    row.status = bool(body.status)
+    row.remark = body.remark
+    db.commit()
+    return make_response(200, data={}, msg="编辑成功")
+
+
+@geeker_router.post("/dict/data/delete")
+@api_router.post("/dict/data/delete")
+def dict_data_delete(
+    body: DictDataDeleteBody,
+    db: Session = Depends(get_db),
+    x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
+) -> Dict[str, Any]:
+    ctx = require_user(x_access_token)
+    if not ctx:
+        return make_response(401, data={}, msg="登录过期，请重新登录")
+
+    deleted = 0
+    for raw in body.id:
+        did = int(raw) if not isinstance(raw, int) else raw
+        row = db.query(SysDictData).filter(SysDictData.id == did).first()
+        if row:
+            db.delete(row)
+            deleted += 1
+    if not deleted:
+        return make_response(500, data={}, msg="字典数据不存在或已删除")
+
+    db.commit()
+    return make_response(200, data={}, msg="删除成功")
+
+
+@geeker_router.post("/dict/data/changeStatus")
+@api_router.post("/dict/data/changeStatus")
+def dict_data_change_status(
+    body: DictDataChangeStatusBody,
+    db: Session = Depends(get_db),
+    x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
+) -> Dict[str, Any]:
+    ctx = require_user(x_access_token)
+    if not ctx:
+        return make_response(401, data={}, msg="登录过期，请重新登录")
+
+    did = int(body.id) if not isinstance(body.id, int) else body.id
+    row = db.query(SysDictData).filter(SysDictData.id == did).first()
+    if not row:
+        return make_response(500, data={}, msg="字典数据不存在")
+
+    row.status = bool(body.status)
+    db.commit()
+    return make_response(200, data={}, msg="状态修改成功")
+
+
+@geeker_router.get("/user/info")
+@api_router.get("/user/info")
+def user_info(x_access_token: Optional[str] = Header(default=None, alias="x-access-token")) -> Dict[str, Any]:
+    ctx = require_user(x_access_token)
+    if not ctx:
+        return make_response(401, data={}, msg="登录过期，请重新登录")
+
+    db = SessionLocal()
+    try:
+        button_rows = fetch_button_menus_for_user(db, ctx)
+        buttons = build_auth_button_codes(button_rows)
+    finally:
+        db.close()
+
+    data = {
+        "id": str(ctx["user_id"]),
+        "name": ctx["username"],
+        "avatar": ctx.get("avatar") or DEFAULT_AVATAR,
+        "roles": ctx.get("roles") or [],
+        "roleName": ctx.get("roleName") or "管理员",
+        "buttons": buttons,
+    }
+    return make_response(200, data=data, msg="success")
+
+
+@geeker_router.post("/user/changePassword")
+@api_router.post("/user/changePassword")
+def user_change_password(
+    body: UserChangePasswordBody,
+    x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    ctx = require_user(x_access_token)
+    if not ctx:
+        return make_response(401, data={}, msg="登录过期，请重新登录")
+
+    user = db.query(SysUser).filter(SysUser.id == ctx["user_id"]).first()
+    if not user:
+        return make_response(401, data={}, msg="登录过期，请重新登录")
+
+    if not pwd_context.verify(body.oldPassword, user.password):
+        return make_response(500, data={}, msg="原密码不正确")
+
+    user.password = pwd_context.hash(body.newPassword)
+    db.commit()
+    return make_response(200, data={}, msg="密码修改成功，请重新登录")
+
+
+@geeker_router.post("/logout")
+@api_router.post("/logout")
+def logout() -> Dict[str, Any]:
+    return make_response(200, data={}, msg="退出成功")
+
+
+@geeker_router.post("/user/list")
+@api_router.post("/user/list")
+def user_list_page(
+    body: UserListBody,
+    db: Session = Depends(get_db),
+    x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
+) -> Dict[str, Any]:
+    ctx = require_user(x_access_token)
+    if not ctx:
+        return make_response(401, data={}, msg="登录过期，请重新登录")
+
+    q = db.query(SysUser)
+    if body.username and body.username.strip():
+        kw = f"%{body.username.strip()}%"
+        q = q.filter(SysUser.username.like(kw))
+    if body.gender is not None and str(body.gender).strip() != "":
+        q = q.filter(SysUser.gender == str(body.gender).strip())
+
+    total = q.count()
+    page_num = body.pageNum
+    page_size = body.pageSize
+    rows = (
+        q.order_by(SysUser.id.desc())
+        .offset((page_num - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+
+    data = {
+        "list": [_user_row(u) for u in rows],
+        "pageNum": page_num,
+        "pageSize": page_size,
+        "total": total,
+    }
+    return make_response(200, data=data, msg="success")
+
+
+@geeker_router.post("/user/add", dependencies=[Depends(require_permission("user:add"))])
+@api_router.post("/user/add", dependencies=[Depends(require_permission("user:add"))])
+def user_add(
+    body: UserAddBody,
+    db: Session = Depends(get_db),
+    x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
+) -> Dict[str, Any]:
+    ctx = require_user(x_access_token)
+    if not ctx:
+        return make_response(401, data={}, msg="登录过期，请重新登录")
+
+    name = body.username.strip()
+    if db.query(SysUser).filter(SysUser.username == name).first():
+        return make_response(500, data={}, msg="用户名已存在")
+
+    gv = (str(body.gender).strip() if body.gender is not None else "") or "3"
+    u = SysUser(
+        username=name,
+        password=pwd_context.hash(body.password),
+        nickname=body.nickname,
+        email=body.email,
+        phone=body.phone,
+        gender=gv,
+        is_active=True,
+        is_superuser=False,
+    )
+    if body.roleIds:
+        roles = db.query(SysRole).filter(SysRole.id.in_(body.roleIds), SysRole.is_active == True).all()  # noqa: E712
+        u.roles = roles
+    db.add(u)
+    db.commit()
+    return make_response(200, data={}, msg="新增成功")
+
+
+@geeker_router.post("/user/delete", dependencies=[Depends(require_permission("user:delete"))])
+@api_router.post("/user/delete", dependencies=[Depends(require_permission("user:delete"))])
+def user_delete(
+    body: UserDeleteBody,
+    db: Session = Depends(get_db),
+    x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
+) -> Dict[str, Any]:
+    ctx = require_user(x_access_token)
+    if not ctx:
+        return make_response(401, data={}, msg="登录过期，请重新登录")
+
+    current_uid = ctx["user_id"]
+    deleted = 0
+    for raw in body.id:
+        uid = int(raw) if not isinstance(raw, int) else raw
+        if uid == current_uid:
+            return make_response(500, data={}, msg="不能删除当前登录用户")
+        u = db.query(SysUser).filter(SysUser.id == uid).first()
+        if u:
+            db.delete(u)
+            deleted += 1
+    if not deleted:
+        return make_response(500, data={}, msg="用户不存在或已删除")
+
+    db.commit()
+    return make_response(200, data={}, msg="删除成功")
+
+
+@geeker_router.post("/user/edit", dependencies=[Depends(require_permission("user:edit"))])
+@api_router.post("/user/edit", dependencies=[Depends(require_permission("user:edit"))])
+def user_edit(
+    body: UserEditBody,
+    db: Session = Depends(get_db),
+    x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
+) -> Dict[str, Any]:
+    ctx = require_user(x_access_token)
+    if not ctx:
+        return make_response(401, data={}, msg="登录过期，请重新登录")
+
+    uid = int(body.id) if not isinstance(body.id, int) else body.id
+    u = db.query(SysUser).filter(SysUser.id == uid).first()
+    if not u:
+        return make_response(500, data={}, msg="用户不存在")
+
+    if body.username is not None:
+        name = body.username.strip()
+        if not name:
+            return make_response(500, data={}, msg="用户名不能为空")
+        if name != u.username:
+            other = db.query(SysUser).filter(SysUser.username == name, SysUser.id != uid).first()
+            if other:
+                return make_response(500, data={}, msg="用户名已存在")
+            u.username = name
+
+    if body.nickname is not None:
+        u.nickname = body.nickname
+    if body.email is not None:
+        u.email = body.email
+    if body.phone is not None:
+        u.phone = body.phone
+    if body.gender is not None:
+        u.gender = str(body.gender).strip() or "3"
+    role_ids = list(dict.fromkeys([int(rid) for rid in (body.roleIds or [])]))
+    if role_ids:
+        roles = db.query(SysRole).filter(SysRole.id.in_(role_ids), SysRole.is_active == True).all()  # noqa: E712
+        u.roles = roles
+    else:
+        u.roles = []
+
+    db.commit()
+    return make_response(200, data={}, msg="编辑成功")
+
+
+@geeker_router.post("/user/changeStatus")
+@api_router.post("/user/changeStatus")
+def user_change_status(
+    body: UserChangeStatusBody,
+    db: Session = Depends(get_db),
+    x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
+) -> Dict[str, Any]:
+    ctx = require_user(x_access_token)
+    if not ctx:
+        return make_response(401, data={}, msg="登录过期，请重新登录")
+
+    if body.status not in (0, 1):
+        return make_response(500, data={}, msg="状态参数无效")
+
+    uid = int(body.id) if not isinstance(body.id, int) else body.id
+    current_uid = ctx["user_id"]
+
+    if uid == current_uid and body.status == 0:
+        return make_response(500, data={}, msg="不能禁用当前登录用户")
+
+    u = db.query(SysUser).filter(SysUser.id == uid).first()
+    if not u:
+        return make_response(500, data={}, msg="用户不存在")
+
+    u.is_active = bool(body.status)
+    db.commit()
+    return make_response(200, data={}, msg="状态修改成功")
+
+
+def _role_row(r: SysRole) -> Dict[str, Any]:
+    created = r.created_at.strftime("%Y-%m-%d %H:%M:%S") if r.created_at else ""
+    return {
+        "id": str(r.id),
+        "roleName": r.name,
+        "roleCode": r.code,
+        "remark": r.description or "",
+        "status": 1 if r.is_active else 0,
+        "createTime": created,
+    }
+
+
+@geeker_router.post("/role/list")
+@api_router.post("/role/list")
+def role_list_page(
+    body: RoleListBody,
+    db: Session = Depends(get_db),
+    x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
+) -> Dict[str, Any]:
+    ctx = require_user(x_access_token)
+    if not ctx:
+        return make_response(401, data={}, msg="登录过期，请重新登录")
+
+    q = db.query(SysRole)
+    if body.roleName and body.roleName.strip():
+        q = q.filter(SysRole.name.like(f"%{body.roleName.strip()}%"))
+    if body.roleCode and body.roleCode.strip():
+        q = q.filter(SysRole.code.like(f"%{body.roleCode.strip()}%"))
+
+    total = q.count()
+    page_num = body.pageNum
+    page_size = body.pageSize
+    rows = (
+        q.order_by(SysRole.id.desc())
+        .offset((page_num - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+    data = {
+        "list": [_role_row(r) for r in rows],
+        "pageNum": page_num,
+        "pageSize": page_size,
+        "total": total,
+    }
+    return make_response(200, data=data, msg="success")
+
+
+@geeker_router.get("/role/all")
+@api_router.get("/role/all")
+def role_all(
+    db: Session = Depends(get_db),
+    x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
+) -> Dict[str, Any]:
+    ctx = require_user(x_access_token)
+    if not ctx:
+        return make_response(401, data={}, msg="登录过期，请重新登录")
+    rows = db.query(SysRole).filter(SysRole.is_active == True).order_by(SysRole.id.asc()).all()  # noqa: E712
+    data = [{"id": r.id, "roleName": r.name} for r in rows]
+    return make_response(200, data=data, msg="success")
+
+
+@geeker_router.post("/role/add")
+@api_router.post("/role/add")
+def role_add(
+    body: RoleAddBody,
+    db: Session = Depends(get_db),
+    x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
+) -> Dict[str, Any]:
+    ctx = require_user(x_access_token)
+    if not ctx:
+        return make_response(401, data={}, msg="登录过期，请重新登录")
+
+    code = body.roleCode.strip()
+    name = body.roleName.strip()
+    if db.query(SysRole).filter(SysRole.code == code).first():
+        return make_response(500, data={}, msg="角色标识已存在")
+    if db.query(SysRole).filter(SysRole.name == name).first():
+        return make_response(500, data={}, msg="角色名称已存在")
+
+    r = SysRole(
+        name=name,
+        code=code,
+        description=body.remark,
+        is_active=True,
+    )
+    db.add(r)
+    db.commit()
+    return make_response(200, data={}, msg="新增成功")
+
+
+@geeker_router.post("/role/edit")
+@api_router.post("/role/edit")
+def role_edit(
+    body: RoleEditBody,
+    db: Session = Depends(get_db),
+    x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
+) -> Dict[str, Any]:
+    ctx = require_user(x_access_token)
+    if not ctx:
+        return make_response(401, data={}, msg="登录过期，请重新登录")
+
+    rid = int(body.id) if not isinstance(body.id, int) else body.id
+    r = db.query(SysRole).filter(SysRole.id == rid).first()
+    if not r:
+        return make_response(500, data={}, msg="角色不存在")
+
+    name = body.roleName.strip()
+    code = body.roleCode.strip()
+    if not name or not code:
+        return make_response(500, data={}, msg="角色名称或标识不能为空")
+
+    if r.code == "admin" and code != "admin":
+        return make_response(500, data={}, msg="不能修改超级管理员角色标识")
+
+    if name != r.name:
+        if db.query(SysRole).filter(SysRole.name == name, SysRole.id != rid).first():
+            return make_response(500, data={}, msg="角色名称已存在")
+        r.name = name
+    if code != r.code:
+        if db.query(SysRole).filter(SysRole.code == code, SysRole.id != rid).first():
+            return make_response(500, data={}, msg="角色标识已存在")
+        r.code = code
+
+    if body.remark is not None:
+        r.description = body.remark
+
+    db.commit()
+    return make_response(200, data={}, msg="编辑成功")
+
+
+@geeker_router.post("/role/delete")
+@api_router.post("/role/delete")
+def role_delete(
+    body: RoleDeleteBody,
+    db: Session = Depends(get_db),
+    x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
+) -> Dict[str, Any]:
+    ctx = require_user(x_access_token)
+    if not ctx:
+        return make_response(401, data={}, msg="登录过期，请重新登录")
+
+    deleted = 0
+    for raw in body.id:
+        rid = int(raw) if not isinstance(raw, int) else raw
+        role = db.query(SysRole).filter(SysRole.id == rid).first()
+        if not role:
+            continue
+        if role.code == "admin":
+            return make_response(500, data={}, msg="不能删除超级管理员角色")
+        db.delete(role)
+        deleted += 1
+
+    if not deleted:
+        return make_response(500, data={}, msg="角色不存在或已删除")
+
+    db.commit()
+    return make_response(200, data={}, msg="删除成功")
+
+
+def _query_menu_tree_for_manage(db: Session) -> List[dict]:
+    """菜单管理：返回全部菜单（含停用）树。"""
+    rows = (
+        db.query(SysMenu)
+        .order_by(SysMenu.sort.asc(), SysMenu.id.asc())
+        .all()
+    )
+    return build_menu_tree_all(rows)
+
+
+@geeker_router.get("/menu/all_tree")
+@api_router.get("/menu/all_tree")
+def menu_all_tree(
+    db: Session = Depends(get_db),
+    x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
+) -> Dict[str, Any]:
+    ctx = require_user(x_access_token)
+    if not ctx:
+        return make_response(401, data=[], msg="登录过期，请重新登录")
+
+    rows = (
+        db.query(SysMenu)
+        .filter(SysMenu.status == True)  # noqa: E712
+        .order_by(SysMenu.sort.asc(), SysMenu.id.asc())
+        .all()
+    )
+    tree = build_menu_tree_all(rows)
+    return make_response(200, data=tree, msg="success")
+
+
+@geeker_router.get("/menu/manage_tree")
+@api_router.get("/menu/manage_tree")
+def menu_manage_tree(
+    db: Session = Depends(get_db),
+    x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
+) -> Dict[str, Any]:
+    """菜单管理页数据源：全量树（含停用）。"""
+    ctx = require_user(x_access_token)
+    if not ctx:
+        return make_response(401, data=[], msg="登录过期，请重新登录")
+    return make_response(200, data=_query_menu_tree_for_manage(db), msg="success")
+
+
+@geeker_router.post("/role/getMenuIds")
+@api_router.post("/role/getMenuIds")
+def role_get_menu_ids(
+    body: RoleMenuIdsBody,
+    db: Session = Depends(get_db),
+    x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
+) -> Dict[str, Any]:
+    ctx = require_user(x_access_token)
+    if not ctx:
+        return make_response(401, data=[], msg="登录过期，请重新登录")
+
+    rid = int(body.roleId) if not isinstance(body.roleId, int) else body.roleId
+    role = db.query(SysRole).filter(SysRole.id == rid).first()
+    if not role:
+        return make_response(500, data=[], msg="角色不存在")
+
+    ids = [m.id for m in role.menus]
+    return make_response(200, data=ids, msg="success")
+
+
+@geeker_router.post("/role/assignMenu")
+@api_router.post("/role/assignMenu")
+def role_assign_menu(
+    body: RoleAssignMenuBody,
+    db: Session = Depends(get_db),
+    x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
+) -> Dict[str, Any]:
+    ctx = require_user(x_access_token)
+    if not ctx:
+        return make_response(401, data={}, msg="登录过期，请重新登录")
+
+    rid = int(body.roleId) if not isinstance(body.roleId, int) else body.roleId
+    role = db.query(SysRole).filter(SysRole.id == rid).first()
+    if not role:
+        return make_response(500, data={}, msg="角色不存在")
+
+    unique_ids = list(dict.fromkeys(body.menuIds))
+
+    try:
+        db.query(SysRoleMenu).filter(SysRoleMenu.role_id == rid).delete(synchronize_session=False)
+        for mid in unique_ids:
+            db.add(SysRoleMenu(role_id=rid, menu_id=int(mid)))
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+    return make_response(200, data={}, msg="权限分配成功")
+
+
+@geeker_router.post("/menu/add")
+@api_router.post("/menu/add")
+def menu_add(
+    body: MenuAddBody,
+    db: Session = Depends(get_db),
+    x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
+) -> Dict[str, Any]:
+    ctx = require_user(x_access_token)
+    if not ctx:
+        return make_response(401, data={}, msg="登录过期，请重新登录")
+
+    mt = (body.menuType or "MENU").strip().upper()
+    if mt not in _MENU_TYPES:
+        return make_response(500, data={}, msg="菜单类型无效")
+
+    pid = body.parentId
+    if pid is not None:
+        parent = db.query(SysMenu).filter(SysMenu.id == pid).first()
+        if not parent:
+            return make_response(500, data={}, msg="父级菜单不存在")
+
+    m = SysMenu(
+        parent_id=pid,
+        menu_type=mt,
+        name=body.name.strip(),
+        title=body.title.strip(),
+        path=(body.path or "").strip() or None,
+        component=(body.component or "").strip() or None,
+        icon=(body.icon or "").strip() or None,
+        sort=body.sort,
+        remark=body.remark,
+        status=True,
+    )
+    db.add(m)
+    db.commit()
+    return make_response(200, data={}, msg="新增成功")
+
+
+@geeker_router.post("/menu/edit")
+@api_router.post("/menu/edit")
+def menu_edit(
+    body: MenuEditBody,
+    db: Session = Depends(get_db),
+    x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
+) -> Dict[str, Any]:
+    ctx = require_user(x_access_token)
+    if not ctx:
+        return make_response(401, data={}, msg="登录过期，请重新登录")
+
+    mid = int(body.id) if not isinstance(body.id, int) else body.id
+    m = db.query(SysMenu).filter(SysMenu.id == mid).first()
+    if not m:
+        return make_response(500, data={}, msg="菜单不存在")
+
+    if body.parentId is not None:
+        if body.parentId == mid:
+            return make_response(500, data={}, msg="不能将父级设为自身")
+        if body.parentId == 0:
+            m.parent_id = None
+        else:
+            parent = db.query(SysMenu).filter(SysMenu.id == body.parentId).first()
+            if not parent:
+                return make_response(500, data={}, msg="父级菜单不存在")
+            m.parent_id = body.parentId
+
+    if body.menuType is not None:
+        mt = body.menuType.strip().upper()
+        if mt not in _MENU_TYPES:
+            return make_response(500, data={}, msg="菜单类型无效")
+        m.menu_type = mt
+    if body.name is not None:
+        m.name = body.name.strip()
+    if body.title is not None:
+        m.title = body.title.strip()
+    if body.path is not None:
+        m.path = body.path.strip() or None
+    if body.component is not None:
+        m.component = body.component.strip() or None
+    if body.icon is not None:
+        m.icon = body.icon.strip() or None
+    if body.sort is not None:
+        m.sort = body.sort
+    if body.remark is not None:
+        m.remark = body.remark
+    if body.status is not None:
+        m.status = body.status
+
+    db.commit()
+    return make_response(200, data={}, msg="编辑成功")
+
+
+@geeker_router.post("/menu/delete")
+@api_router.post("/menu/delete")
+def menu_delete(
+    body: MenuDeleteBody,
+    db: Session = Depends(get_db),
+    x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
+) -> Dict[str, Any]:
+    ctx = require_user(x_access_token)
+    if not ctx:
+        return make_response(401, data={}, msg="登录过期，请重新登录")
+
+    mid = int(body.id) if not isinstance(body.id, int) else body.id
+    m = db.query(SysMenu).filter(SysMenu.id == mid).first()
+    if not m:
+        return make_response(500, data={}, msg="菜单不存在")
+
+    has_child = db.query(SysMenu).filter(SysMenu.parent_id == mid).first()
+    if has_child:
+        return make_response(500, data={}, msg="请先删除子菜单")
+
+    db.delete(m)
+    db.commit()
+    return make_response(200, data={}, msg="删除成功")
+
+
+app = FastAPI(title="Geeker-Admin FastAPI Auth Center")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origin_regex=r"http://localhost(:\d+)?|http://127\.0\.0\.1(:\d+)?",
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.include_router(geeker_router)
+app.include_router(api_router)

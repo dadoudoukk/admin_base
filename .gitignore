@@ -1,0 +1,12 @@
+# 前端忽略
+node_modules/
+dist/
+
+# 后端忽略
+__pycache__/
+venv/
+.venv/
+*.pyc
+
+# 环境变量（别把数据库密码传上去了！）
+.env
