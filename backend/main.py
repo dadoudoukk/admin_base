@@ -1,15 +1,25 @@
+import os
+import shutil
 import time
+import uuid
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Union
 
 import jwt
-from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException
+from fastapi import APIRouter, Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from passlib.context import CryptContext
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from core.database import SessionLocal
-from models import SysDictData, SysDictType, SysMenu, SysRole, SysRoleMenu, SysUser
+from models import BizNewsArticle, BizNewsCategory, SysDictData, SysDictType, SysMenu, SysRole, SysRoleMenu, SysUser
+
+# ========== 本地上传目录（backend/uploads）==========
+_BACKEND_DIR = Path(__file__).resolve().parent
+UPLOAD_DIR = _BACKEND_DIR / "uploads"
+os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 # ========== JWT ==========
 SECRET_KEY = "geeker-admin-dev-secret-change-me"
@@ -335,6 +345,77 @@ class DictDataChangeStatusBody(BaseModel):
     status: Union[bool, int] = Field(..., description="状态（true/false 或 1/0）")
 
 
+class NewsCategoryListBody(BaseModel):
+    pageNum: int = Field(1, ge=1, description="当前页码")
+    pageSize: int = Field(10, ge=1, le=200, description="每页条数")
+    categoryName: Optional[str] = Field(None, description="分类名称模糊搜索")
+
+
+class NewsCategoryAddBody(BaseModel):
+    categoryName: str = Field(..., min_length=1, description="分类名称")
+    sort: int = Field(0, description="排序")
+    status: int = Field(1, description="状态：0停用 1启用")
+    remark: Optional[str] = Field(None, description="备注")
+
+
+class NewsCategoryEditBody(BaseModel):
+    id: Union[str, int] = Field(..., description="分类 ID")
+    categoryName: str = Field(..., min_length=1, description="分类名称")
+    sort: int = Field(0, description="排序")
+    status: int = Field(1, description="状态：0停用 1启用")
+    remark: Optional[str] = Field(None, description="备注")
+
+
+class NewsCategoryDeleteBody(BaseModel):
+    id: List[Union[str, int]] = Field(..., min_length=1, description="待删除分类 ID 列表")
+
+
+class NewsCategoryChangeStatusBody(BaseModel):
+    id: Union[str, int] = Field(..., description="分类 ID")
+    status: int = Field(..., description="状态：0停用 1启用")
+
+
+class NewsArticleListBody(BaseModel):
+    pageNum: int = Field(1, ge=1, description="当前页码")
+    pageSize: int = Field(10, ge=1, le=200, description="每页条数")
+    title: Optional[str] = Field(None, description="标题模糊搜索")
+    categoryId: Optional[Union[str, int]] = Field(None, description="分类 ID")
+
+
+class NewsArticleAddBody(BaseModel):
+    categoryId: Union[str, int] = Field(..., description="分类 ID")
+    title: str = Field(..., min_length=1, description="新闻标题")
+    author: Optional[str] = Field(None, description="作者")
+    newsType: int = Field(0, description="类型：0图文内容 1外部跳转")
+    content: Optional[str] = Field(None, description="正文内容")
+    redirectUrl: Optional[str] = Field(None, description="跳转链接")
+    imageUrl: Optional[str] = Field(None, description="封面图 URL")
+    isTop: int = Field(0, description="是否置顶：0否 1是")
+    status: int = Field(1, description="状态：0下架 1发布")
+
+
+class NewsArticleEditBody(BaseModel):
+    id: Union[str, int] = Field(..., description="文章 ID")
+    categoryId: Union[str, int] = Field(..., description="分类 ID")
+    title: str = Field(..., min_length=1, description="新闻标题")
+    author: Optional[str] = Field(None, description="作者")
+    newsType: int = Field(0, description="类型：0图文内容 1外部跳转")
+    content: Optional[str] = Field(None, description="正文内容")
+    redirectUrl: Optional[str] = Field(None, description="跳转链接")
+    imageUrl: Optional[str] = Field(None, description="封面图 URL")
+    isTop: int = Field(0, description="是否置顶：0否 1是")
+    status: int = Field(1, description="状态：0下架 1发布")
+
+
+class NewsArticleDeleteBody(BaseModel):
+    id: List[Union[str, int]] = Field(..., min_length=1, description="待删除文章 ID 列表")
+
+
+class NewsArticleChangeStatusBody(BaseModel):
+    id: Union[str, int] = Field(..., description="文章 ID")
+    status: int = Field(..., description="状态：0下架 1发布")
+
+
 def menu_list_fallback() -> List[dict]:
     """数据库无可用菜单时的兜底树（至少含首页，保证能进系统）。"""
     return [
@@ -562,6 +643,36 @@ def _user_row(u: SysUser) -> Dict[str, Any]:
         "avatar": u.avatar or "",
         "photo": [],
         "user": {"detail": {"age": 0}},
+    }
+
+
+def _news_category_row(c: BizNewsCategory) -> Dict[str, Any]:
+    created = c.create_time.strftime("%Y-%m-%d %H:%M:%S") if c.create_time else ""
+    return {
+        "id": str(c.id),
+        "categoryName": c.category_name,
+        "sort": c.sort,
+        "status": 1 if int(c.status) == 1 else 0,
+        "remark": c.remark or "",
+        "createTime": created,
+    }
+
+
+def _news_article_row(a: BizNewsArticle, category_name: str = "") -> Dict[str, Any]:
+    created = a.create_time.strftime("%Y-%m-%d %H:%M:%S") if a.create_time else ""
+    return {
+        "id": str(a.id),
+        "categoryId": str(a.category_id),
+        "categoryName": category_name,
+        "title": a.title,
+        "author": a.author or "",
+        "newsType": a.news_type,
+        "content": a.content or "",
+        "redirectUrl": a.redirect_url or "",
+        "imageUrl": a.cover_image_url or "",
+        "isTop": a.is_top,
+        "status": a.status,
+        "createTime": created,
     }
 
 
@@ -1524,7 +1635,375 @@ def menu_delete(
     return make_response(200, data={}, msg="删除成功")
 
 
+@geeker_router.post("/biz/newsCategory/list")
+@api_router.post("/biz/newsCategory/list")
+def news_category_list(
+    body: NewsCategoryListBody,
+    db: Session = Depends(get_db),
+    x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
+) -> Dict[str, Any]:
+    ctx = require_user(x_access_token)
+    if not ctx:
+        return make_response(401, data={}, msg="登录过期，请重新登录")
+
+    q = db.query(BizNewsCategory)
+    if body.categoryName and body.categoryName.strip():
+        q = q.filter(BizNewsCategory.category_name.like(f"%{body.categoryName.strip()}%"))
+
+    total = q.count()
+    rows = (
+        q.order_by(BizNewsCategory.sort.asc(), BizNewsCategory.id.asc())
+        .offset((body.pageNum - 1) * body.pageSize)
+        .limit(body.pageSize)
+        .all()
+    )
+    return make_response(
+        200,
+        data={
+            "list": [_news_category_row(r) for r in rows],
+            "pageNum": body.pageNum,
+            "pageSize": body.pageSize,
+            "total": total,
+        },
+        msg="success",
+    )
+
+
+@geeker_router.post("/biz/newsCategory/add")
+@api_router.post("/biz/newsCategory/add")
+def news_category_add(
+    body: NewsCategoryAddBody,
+    db: Session = Depends(get_db),
+    x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
+) -> Dict[str, Any]:
+    ctx = require_user(x_access_token)
+    if not ctx:
+        return make_response(401, data={}, msg="登录过期，请重新登录")
+
+    if body.status not in (0, 1):
+        return make_response(500, data={}, msg="状态参数无效")
+    category_name = body.categoryName.strip()
+    if not category_name:
+        return make_response(500, data={}, msg="分类名称不能为空")
+    if db.query(BizNewsCategory).filter(BizNewsCategory.category_name == category_name).first():
+        return make_response(500, data={}, msg="分类名称已存在")
+
+    db.add(
+        BizNewsCategory(
+            category_name=category_name,
+            sort=body.sort,
+            status=body.status,
+            remark=body.remark,
+        )
+    )
+    db.commit()
+    return make_response(200, data={}, msg="新增成功")
+
+
+@geeker_router.post("/biz/newsCategory/edit")
+@api_router.post("/biz/newsCategory/edit")
+def news_category_edit(
+    body: NewsCategoryEditBody,
+    db: Session = Depends(get_db),
+    x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
+) -> Dict[str, Any]:
+    ctx = require_user(x_access_token)
+    if not ctx:
+        return make_response(401, data={}, msg="登录过期，请重新登录")
+
+    if body.status not in (0, 1):
+        return make_response(500, data={}, msg="状态参数无效")
+    cid = int(body.id) if not isinstance(body.id, int) else body.id
+    row = db.query(BizNewsCategory).filter(BizNewsCategory.id == cid).first()
+    if not row:
+        return make_response(500, data={}, msg="分类不存在")
+
+    category_name = body.categoryName.strip()
+    if not category_name:
+        return make_response(500, data={}, msg="分类名称不能为空")
+    other = (
+        db.query(BizNewsCategory)
+        .filter(BizNewsCategory.category_name == category_name, BizNewsCategory.id != cid)
+        .first()
+    )
+    if other:
+        return make_response(500, data={}, msg="分类名称已存在")
+
+    row.category_name = category_name
+    row.sort = body.sort
+    row.status = body.status
+    row.remark = body.remark
+    db.commit()
+    return make_response(200, data={}, msg="编辑成功")
+
+
+@geeker_router.post("/biz/newsCategory/delete")
+@api_router.post("/biz/newsCategory/delete")
+def news_category_delete(
+    body: NewsCategoryDeleteBody,
+    db: Session = Depends(get_db),
+    x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
+) -> Dict[str, Any]:
+    ctx = require_user(x_access_token)
+    if not ctx:
+        return make_response(401, data={}, msg="登录过期，请重新登录")
+
+    deleted = 0
+    for raw in body.id:
+        cid = int(raw) if not isinstance(raw, int) else raw
+        row = db.query(BizNewsCategory).filter(BizNewsCategory.id == cid).first()
+        if row:
+            db.delete(row)
+            deleted += 1
+    if not deleted:
+        return make_response(500, data={}, msg="分类不存在或已删除")
+
+    db.commit()
+    return make_response(200, data={}, msg="删除成功")
+
+
+@geeker_router.post("/biz/newsCategory/changeStatus")
+@api_router.post("/biz/newsCategory/changeStatus")
+def news_category_change_status(
+    body: NewsCategoryChangeStatusBody,
+    db: Session = Depends(get_db),
+    x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
+) -> Dict[str, Any]:
+    ctx = require_user(x_access_token)
+    if not ctx:
+        return make_response(401, data={}, msg="登录过期，请重新登录")
+
+    if body.status not in (0, 1):
+        return make_response(500, data={}, msg="状态参数无效")
+    cid = int(body.id) if not isinstance(body.id, int) else body.id
+    row = db.query(BizNewsCategory).filter(BizNewsCategory.id == cid).first()
+    if not row:
+        return make_response(500, data={}, msg="分类不存在")
+
+    row.status = body.status
+    db.commit()
+    return make_response(200, data={}, msg="状态修改成功")
+
+
+@geeker_router.get("/biz/newsCategory/all")
+@api_router.get("/biz/newsCategory/all")
+def news_category_all(
+    db: Session = Depends(get_db),
+    x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
+) -> Dict[str, Any]:
+    ctx = require_user(x_access_token)
+    if not ctx:
+        return make_response(401, data=[], msg="登录过期，请重新登录")
+
+    rows = (
+        db.query(BizNewsCategory)
+        .filter(BizNewsCategory.status == 1)
+        .order_by(BizNewsCategory.sort.asc(), BizNewsCategory.id.asc())
+        .all()
+    )
+    data = [{"id": str(r.id), "categoryName": r.category_name} for r in rows]
+    return make_response(200, data=data, msg="success")
+
+
+@geeker_router.post("/biz/newsArticle/list")
+@api_router.post("/biz/newsArticle/list")
+def news_article_list(
+    body: NewsArticleListBody,
+    db: Session = Depends(get_db),
+    x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
+) -> Dict[str, Any]:
+    ctx = require_user(x_access_token)
+    if not ctx:
+        return make_response(401, data={}, msg="登录过期，请重新登录")
+
+    q = db.query(BizNewsArticle)
+    if body.title and body.title.strip():
+        q = q.filter(BizNewsArticle.title.like(f"%{body.title.strip()}%"))
+    if body.categoryId is not None and str(body.categoryId).strip() != "":
+        cid = int(body.categoryId) if not isinstance(body.categoryId, int) else body.categoryId
+        q = q.filter(BizNewsArticle.category_id == cid)
+
+    total = q.count()
+    rows = (
+        q.order_by(BizNewsArticle.is_top.desc(), BizNewsArticle.id.desc())
+        .offset((body.pageNum - 1) * body.pageSize)
+        .limit(body.pageSize)
+        .all()
+    )
+    category_map = {str(c.id): c.category_name for c in db.query(BizNewsCategory).all()}
+    data_list = [_news_article_row(r, category_map.get(str(r.category_id), "")) for r in rows]
+    return make_response(
+        200,
+        data={
+            "list": data_list,
+            "pageNum": body.pageNum,
+            "pageSize": body.pageSize,
+            "total": total,
+        },
+        msg="success",
+    )
+
+
+@geeker_router.post("/biz/newsArticle/add")
+@api_router.post("/biz/newsArticle/add")
+def news_article_add(
+    body: NewsArticleAddBody,
+    db: Session = Depends(get_db),
+    x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
+) -> Dict[str, Any]:
+    ctx = require_user(x_access_token)
+    if not ctx:
+        return make_response(401, data={}, msg="登录过期，请重新登录")
+
+    if body.newsType not in (0, 1) or body.isTop not in (0, 1) or body.status not in (0, 1):
+        return make_response(500, data={}, msg="状态或类型参数无效")
+    cid = int(body.categoryId) if not isinstance(body.categoryId, int) else body.categoryId
+    if not db.query(BizNewsCategory).filter(BizNewsCategory.id == cid).first():
+        return make_response(500, data={}, msg="新闻分类不存在")
+
+    title = body.title.strip()
+    if not title:
+        return make_response(500, data={}, msg="新闻标题不能为空")
+
+    db.add(
+        BizNewsArticle(
+            category_id=cid,
+            title=title,
+            author=(body.author or "").strip() or None,
+            news_type=body.newsType,
+            content=body.content,
+            redirect_url=(body.redirectUrl or "").strip() or None,
+            cover_image_url=(body.imageUrl or "").strip() or None,
+            is_top=body.isTop,
+            status=body.status,
+        )
+    )
+    db.commit()
+    return make_response(200, data={}, msg="新增成功")
+
+
+@geeker_router.post("/biz/newsArticle/edit")
+@api_router.post("/biz/newsArticle/edit")
+def news_article_edit(
+    body: NewsArticleEditBody,
+    db: Session = Depends(get_db),
+    x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
+) -> Dict[str, Any]:
+    ctx = require_user(x_access_token)
+    if not ctx:
+        return make_response(401, data={}, msg="登录过期，请重新登录")
+
+    if body.newsType not in (0, 1) or body.isTop not in (0, 1) or body.status not in (0, 1):
+        return make_response(500, data={}, msg="状态或类型参数无效")
+    aid = int(body.id) if not isinstance(body.id, int) else body.id
+    row = db.query(BizNewsArticle).filter(BizNewsArticle.id == aid).first()
+    if not row:
+        return make_response(500, data={}, msg="文章不存在")
+
+    cid = int(body.categoryId) if not isinstance(body.categoryId, int) else body.categoryId
+    if not db.query(BizNewsCategory).filter(BizNewsCategory.id == cid).first():
+        return make_response(500, data={}, msg="新闻分类不存在")
+
+    title = body.title.strip()
+    if not title:
+        return make_response(500, data={}, msg="新闻标题不能为空")
+
+    row.category_id = cid
+    row.title = title
+    row.author = (body.author or "").strip() or None
+    row.news_type = body.newsType
+    row.content = body.content
+    row.redirect_url = (body.redirectUrl or "").strip() or None
+    row.cover_image_url = (body.imageUrl or "").strip() or None
+    row.is_top = body.isTop
+    row.status = body.status
+    db.commit()
+    return make_response(200, data={}, msg="编辑成功")
+
+
+@geeker_router.post("/biz/newsArticle/delete")
+@api_router.post("/biz/newsArticle/delete")
+def news_article_delete(
+    body: NewsArticleDeleteBody,
+    db: Session = Depends(get_db),
+    x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
+) -> Dict[str, Any]:
+    ctx = require_user(x_access_token)
+    if not ctx:
+        return make_response(401, data={}, msg="登录过期，请重新登录")
+
+    deleted = 0
+    for raw in body.id:
+        aid = int(raw) if not isinstance(raw, int) else raw
+        row = db.query(BizNewsArticle).filter(BizNewsArticle.id == aid).first()
+        if row:
+            db.delete(row)
+            deleted += 1
+    if not deleted:
+        return make_response(500, data={}, msg="文章不存在或已删除")
+
+    db.commit()
+    return make_response(200, data={}, msg="删除成功")
+
+
+@geeker_router.post("/biz/newsArticle/changeStatus")
+@api_router.post("/biz/newsArticle/changeStatus")
+def news_article_change_status(
+    body: NewsArticleChangeStatusBody,
+    db: Session = Depends(get_db),
+    x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
+) -> Dict[str, Any]:
+    ctx = require_user(x_access_token)
+    if not ctx:
+        return make_response(401, data={}, msg="登录过期，请重新登录")
+
+    if body.status not in (0, 1):
+        return make_response(500, data={}, msg="状态参数无效")
+    aid = int(body.id) if not isinstance(body.id, int) else body.id
+    row = db.query(BizNewsArticle).filter(BizNewsArticle.id == aid).first()
+    if not row:
+        return make_response(500, data={}, msg="文章不存在")
+
+    row.status = body.status
+    db.commit()
+    return make_response(200, data={}, msg="状态修改成功")
+
+
+@geeker_router.post("/file/upload")
+@geeker_router.post("/file/upload/img")
+@api_router.post("/file/upload")
+@api_router.post("/file/upload/img")
+async def file_upload(
+    request: Request,
+    file: UploadFile = File(...),
+    x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
+) -> Dict[str, Any]:
+    ctx = require_user(x_access_token)
+    if not ctx:
+        return make_response(401, data={}, msg="登录过期，请重新登录")
+
+    orig = (file.filename or "file").strip()
+    suffix = Path(orig).suffix
+    if suffix:
+        suffix = suffix.lower()
+    else:
+        suffix = ""
+    new_name = f"{uuid.uuid4().hex}{suffix}"
+    dest = UPLOAD_DIR / new_name
+    try:
+        with dest.open("wb") as out:
+            shutil.copyfileobj(file.file, out)
+    finally:
+        await file.close()
+
+    base = str(request.base_url).rstrip("/")
+    file_url = f"{base}/uploads/{new_name}"
+    return make_response(200, data={"fileUrl": file_url}, msg="上传成功")
+
+
 app = FastAPI(title="Geeker-Admin FastAPI Auth Center")
+
+app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
 
 app.add_middleware(
     CORSMiddleware,

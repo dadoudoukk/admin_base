@@ -1,4 +1,5 @@
 from core.database import Base, SessionLocal, engine
+from models.business import BizNewsArticle, BizNewsCategory
 from models.dictionary import SysDictData, SysDictType
 from models.rbac import SysMenu, SysRole, SysRoleMenu, SysUser, SysUserRole
 
@@ -13,5 +14,7 @@ __all__ = [
     "SysRoleMenu",
     "SysDictType",
     "SysDictData",
+    "BizNewsCategory",
+    "BizNewsArticle",
 ]
 

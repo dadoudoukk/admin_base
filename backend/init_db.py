@@ -23,7 +23,7 @@ from passlib.context import CryptContext
 from sqlalchemy.orm import Session
 
 # 导入模型，确保 metadata 完整
-from models import SysDictData, SysDictType, SysMenu, SysRole, SysUser  # noqa: F401
+from models import BizNewsArticle, BizNewsCategory, SysDictData, SysDictType, SysMenu, SysRole, SysUser  # noqa: F401
 
 from core.database import Base, SessionLocal, engine
 
@@ -32,6 +32,26 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 def ensure_tables() -> None:
     Base.metadata.create_all(bind=engine)
+
+
+def ensure_biz_news_article_cover_image_column() -> None:
+    """旧库无 cover_image_url 列时执行 ALTER。"""
+    from sqlalchemy import inspect, text
+
+    try:
+        insp = inspect(engine)
+        cols = [c["name"] for c in insp.get_columns("biz_news_article")]
+    except Exception:
+        return
+    if "cover_image_url" in cols:
+        return
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "ALTER TABLE biz_news_article ADD COLUMN cover_image_url VARCHAR(512) NULL COMMENT '封面图 URL'"
+            )
+        )
+    print("已为 biz_news_article 表补充 cover_image_url 字段（旧库升级）。")
 
 
 def ensure_user_gender_column() -> None:
@@ -268,9 +288,131 @@ def ensure_sys_dict_init(session: Session) -> None:
     print("数据字典 sys_user_sex 已检查并写入（无重复项则跳过）。")
 
 
+def ensure_news_center_menu(session: Session) -> None:
+    """创建「新闻中心 -> 新闻分类」菜单并授权 admin；已存在则跳过。"""
+    parent = session.query(SysMenu).filter(SysMenu.name == "newsCenter").first()
+    if not parent:
+        parent = SysMenu(
+            parent_id=None,
+            menu_type="CATALOG",
+            name="newsCenter",
+            title="新闻中心",
+            path="/news",
+            icon="Document",
+            sort=3,
+        )
+        session.add(parent)
+        session.flush()
+
+    child = session.query(SysMenu).filter(SysMenu.name == "newsCategory").first()
+    if not child:
+        child = SysMenu(
+            parent_id=parent.id,
+            menu_type="MENU",
+            name="newsCategory",
+            title="新闻分类",
+            path="/news/newsCategory",
+            component="/news/newsCategory/index",
+            icon="Menu",
+            sort=1,
+        )
+        session.add(child)
+        session.flush()
+
+    role = session.query(SysRole).filter(SysRole.code == "admin").first()
+    if role:
+        if parent not in role.menus:
+            role.menus.append(parent)
+        if child not in role.menus:
+            role.menus.append(child)
+
+    session.commit()
+    print("已检查「新闻中心 -> 新闻分类」菜单并关联超级管理员角色。")
+
+
+def ensure_news_category_init(session: Session) -> None:
+    """写入新闻分类初始化数据；已存在同名分类则跳过。"""
+    items = [
+        ("公司动态", 1),
+        ("行业资讯", 2),
+        ("通知公告", 3),
+    ]
+    for name, sort in items:
+        exists = session.query(BizNewsCategory).filter(BizNewsCategory.category_name == name).first()
+        if exists:
+            continue
+        session.add(
+            BizNewsCategory(
+                category_name=name,
+                sort=sort,
+                status=1,
+                remark=None,
+            )
+        )
+    session.commit()
+    print("新闻分类初始化数据已检查并写入（无重复项则跳过）。")
+
+
+def ensure_news_article_menu(session: Session) -> None:
+    """在「新闻中心」下挂「新闻列表」菜单并授权 admin。"""
+    parent = session.query(SysMenu).filter(SysMenu.name == "newsCenter").first()
+    if not parent:
+        print("未找到「新闻中心」菜单，跳过新闻列表菜单补充。")
+        return
+    child = session.query(SysMenu).filter(SysMenu.name == "newsArticle").first()
+    if not child:
+        child = SysMenu(
+            parent_id=parent.id,
+            menu_type="MENU",
+            name="newsArticle",
+            title="新闻列表",
+            path="/news/newsArticle",
+            component="/news/newsArticle/index",
+            icon="Document",
+            sort=2,
+        )
+        session.add(child)
+        session.flush()
+
+    role = session.query(SysRole).filter(SysRole.code == "admin").first()
+    if role and child not in role.menus:
+        role.menus.append(child)
+    session.commit()
+    print("已检查「新闻中心 -> 新闻列表」菜单并关联超级管理员角色。")
+
+
+def ensure_news_article_init(session: Session) -> None:
+    """写入一条新闻文章测试数据（挂公司动态分类）。"""
+    category = session.query(BizNewsCategory).filter(BizNewsCategory.category_name == "公司动态").first()
+    if not category:
+        print("未找到「公司动态」分类，跳过新闻文章初始化数据。")
+        return
+
+    exists = session.query(BizNewsArticle).filter(BizNewsArticle.title == "欢迎使用新闻中心").first()
+    if exists:
+        print("新闻文章测试数据已存在，跳过写入。")
+        return
+
+    session.add(
+        BizNewsArticle(
+            category_id=category.id,
+            title="欢迎使用新闻中心",
+            author="admin",
+            news_type=0,
+            content="这是一条初始化新闻，用于验证新闻列表基础功能。",
+            redirect_url=None,
+            is_top=1,
+            status=1,
+        )
+    )
+    session.commit()
+    print("新闻文章初始化数据已写入。")
+
+
 def main() -> None:
     ensure_tables()
     ensure_user_gender_column()
+    ensure_biz_news_article_cover_image_column()
     session = SessionLocal()
     try:
         seed(session)
@@ -279,6 +421,10 @@ def main() -> None:
         ensure_menu_manage_menu(session)
         ensure_dict_manage_menu(session)
         ensure_sys_dict_init(session)
+        ensure_news_center_menu(session)
+        ensure_news_category_init(session)
+        ensure_news_article_menu(session)
+        ensure_news_article_init(session)
     except Exception:
         session.rollback()
         raise
