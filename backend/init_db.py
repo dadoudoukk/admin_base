@@ -7,7 +7,7 @@
 也可在项目根目录:
     python backend/init_db.py
 
-数据库连接使用 core.database 中的 DATABASE_URL，请按需修改该文件。
+数据库连接使用 backend/.env 中的 DATABASE_URL（经 core.config / core.database 加载），请按需修改。
 """
 from __future__ import annotations
 
@@ -30,6 +30,7 @@ from models import (  # noqa: F401
     SysDictData,
     SysDictType,
     SysMenu,
+    SysOperLog,
     SysRole,
     SysUser,
 )
@@ -61,6 +62,22 @@ def ensure_biz_news_article_cover_image_column() -> None:
             )
         )
     print("已为 biz_news_article 表补充 cover_image_url 字段（旧库升级）。")
+
+
+def ensure_sys_oper_log_request_param_column() -> None:
+    """旧库无 request_param 列时执行 ALTER。"""
+    from sqlalchemy import inspect, text
+
+    try:
+        insp = inspect(engine)
+        cols = [c["name"] for c in insp.get_columns("sys_oper_log")]
+    except Exception:
+        return
+    if "request_param" in cols:
+        return
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE sys_oper_log ADD COLUMN request_param TEXT NULL COMMENT '请求参数'"))
+    print("已为 sys_oper_log 表补充 request_param 字段（旧库升级）。")
 
 
 def ensure_user_gender_column() -> None:
@@ -222,6 +239,34 @@ def ensure_menu_manage_menu(session: Session) -> None:
 
     session.commit()
     print("已补充「系统管理 -> 菜单管理」菜单并关联超级管理员角色。")
+
+
+def ensure_system_log_menu(session: Session) -> None:
+    """在「系统管理」下挂「操作日志」并授权 admin。"""
+    parent = session.query(SysMenu).filter(SysMenu.name == "system").first()
+    if not parent:
+        print("未找到「系统管理」菜单，跳过操作日志菜单补充。")
+        return
+    child = session.query(SysMenu).filter(SysMenu.name == "systemLog").first()
+    if not child:
+        child = SysMenu(
+            parent_id=parent.id,
+            menu_type="MENU",
+            name="systemLog",
+            title="操作日志",
+            path="/system/systemLog",
+            component="/system/systemLog/index",
+            icon="Document",
+            sort=5,
+        )
+        session.add(child)
+        session.flush()
+
+    role = session.query(SysRole).filter(SysRole.code == "admin").first()
+    if role and child not in role.menus:
+        role.menus.append(child)
+    session.commit()
+    print("已检查「系统管理 -> 操作日志」菜单并关联超级管理员角色。")
 
 
 def ensure_button_menus_under_parent(
@@ -577,12 +622,14 @@ def main() -> None:
     ensure_tables()
     ensure_user_gender_column()
     ensure_biz_news_article_cover_image_column()
+    ensure_sys_oper_log_request_param_column()
     session = SessionLocal()
     try:
         seed(session)
         ensure_user_manage_menu(session)
         ensure_role_manage_menu(session)
         ensure_menu_manage_menu(session)
+        ensure_system_log_menu(session)
         ensure_dict_manage_menu(session)
         ensure_sys_dict_init(session)
         ensure_news_center_menu(session)

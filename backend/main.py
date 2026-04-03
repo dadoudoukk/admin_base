@@ -1,18 +1,25 @@
+import asyncio
+import logging
 import os
 import shutil
 import time
+import traceback
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Union
 
 import jwt
 from fastapi import APIRouter, Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.responses import Response
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from passlib.context import CryptContext
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from core.config import get_settings
 from core.database import SessionLocal
 from models import (
     BizFragmentCategory,
@@ -22,22 +29,21 @@ from models import (
     SysDictData,
     SysDictType,
     SysMenu,
+    SysOperLog,
     SysRole,
     SysRoleMenu,
     SysUser,
 )
+
+logger = logging.getLogger(__name__)
+_settings = get_settings()
 
 # ========== 本地上传目录（backend/uploads）==========
 _BACKEND_DIR = Path(__file__).resolve().parent
 UPLOAD_DIR = _BACKEND_DIR / "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-# ========== JWT ==========
-SECRET_KEY = "geeker-admin-dev-secret-change-me"
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_SECONDS = 60 * 60 * 24  # 24 小时
-
-DEFAULT_AVATAR = "https://api.dicebear.com/7.x/avataaars/svg?seed=admin"
+# ========== JWT / 默认头像（见 core.config.Settings）==========
 
 # ========== 密码（与 init_db 一致：bcrypt）==========
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -61,14 +67,14 @@ def create_access_token(user_id: int) -> str:
     payload = {
         "user_id": user_id,
         "iat": now,
-        "exp": now + ACCESS_TOKEN_EXPIRE_SECONDS,
+        "exp": now + _settings.access_token_expire_seconds,
     }
-    return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+    return jwt.encode(payload, _settings.secret_key, algorithm=_settings.jwt_algorithm)
 
 
 def decode_access_token(token: str) -> Optional[dict]:
     try:
-        return jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        return jwt.decode(token, _settings.secret_key, algorithms=[_settings.jwt_algorithm])
     except jwt.PyJWTError:
         return None
 
@@ -487,6 +493,13 @@ class FragmentContentChangeStatusBody(BaseModel):
     status: int = Field(..., description="状态：0下线 1上线")
 
 
+class SysOperLogListBody(BaseModel):
+    pageNum: int = Field(1, ge=1, description="当前页码")
+    pageSize: int = Field(10, ge=1, le=200, description="每页条数")
+    userName: Optional[str] = Field(None, description="操作人模糊搜索")
+    requestMethod: Optional[str] = Field(None, description="请求方式，如 POST")
+
+
 def menu_list_fallback() -> List[dict]:
     """数据库无可用菜单时的兜底树（至少含首页，保证能进系统）。"""
     return [
@@ -771,6 +784,116 @@ def _fragment_content_row(r: BizFragmentContent) -> Dict[str, Any]:
         "status": 1 if int(r.status) == 1 else 0,
         "createTime": created,
     }
+
+
+def _oper_log_row(r: SysOperLog) -> Dict[str, Any]:
+    created = r.create_time.strftime("%Y-%m-%d %H:%M:%S") if r.create_time else ""
+    return {
+        "id": str(r.id),
+        "userName": r.user_name or "",
+        "requestMethod": r.request_method,
+        "requestUrl": r.request_url,
+        "requestIp": r.request_ip,
+        "executeTime": r.execute_time,
+        "status": 1 if int(r.status) == 1 else 0,
+        "errorMsg": r.error_msg or "",
+        "requestParam": r.request_param or "",
+        "createTime": created,
+    }
+
+
+def _client_ip(request: Request) -> str:
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip()[:64]
+    if request.client:
+        return (request.client.host or "")[:64]
+    return ""
+
+
+def _save_oper_log_sync(
+    access_token: Optional[str],
+    request_method: str,
+    request_url: str,
+    request_ip: str,
+    execute_time: int,
+    status: int,
+    error_msg: Optional[str],
+    request_param: Optional[str],
+) -> None:
+    """仅在函数内创建 Session，禁止复用外部传入的 Session（线程安全）。"""
+    db = SessionLocal()
+    try:
+        user_name: Optional[str] = None
+        if access_token:
+            claims = decode_access_token(access_token)
+            if claims and claims.get("user_id") is not None:
+                u = db.query(SysUser).filter(SysUser.id == int(claims["user_id"])).first()
+                if u:
+                    user_name = u.username
+        db.add(
+            SysOperLog(
+                user_name=user_name,
+                request_method=request_method,
+                request_url=request_url,
+                request_ip=request_ip,
+                execute_time=execute_time,
+                status=status,
+                error_msg=error_msg,
+                request_param=request_param,
+            )
+        )
+        db.commit()
+    except Exception:
+        logger.exception("写入操作日志失败")
+        db.rollback()
+    finally:
+        db.close()
+
+
+def _resolve_oper_log_status(response: Optional[Response], err: Optional[Exception]) -> tuple[int, Optional[str]]:
+    if err is not None:
+        return 0, (str(err) or "error")[:2000]
+    if response is None:
+        return 0, None
+    raw = response.headers.get("x-geeker-code")
+    if raw is not None:
+        try:
+            code = int(raw)
+            return (1 if code == 200 else 0, None)
+        except ValueError:
+            return 1, None
+    if response.status_code >= 400:
+        return 0, f"HTTP {response.status_code}"
+    return 1, None
+
+
+async def _flush_oper_log_background(
+    access_token: Optional[str],
+    request_method: str,
+    request_url: str,
+    request_ip: str,
+    execute_time_ms: int,
+    status: int,
+    error_msg: Optional[str],
+    request_param: Optional[str],
+) -> None:
+    def _run() -> None:
+        _save_oper_log_sync(
+            access_token,
+            request_method,
+            request_url,
+            request_ip,
+            execute_time_ms,
+            status,
+            error_msg,
+            request_param,
+        )
+
+    try:
+        await asyncio.to_thread(_run)
+    except Exception:
+        logger.exception("异步写入操作日志失败")
 
 
 geeker_router = APIRouter(prefix="/geeker")
@@ -1154,7 +1277,7 @@ def user_info(x_access_token: Optional[str] = Header(default=None, alias="x-acce
     data = {
         "id": str(ctx["user_id"]),
         "name": ctx["username"],
-        "avatar": ctx.get("avatar") or DEFAULT_AVATAR,
+        "avatar": ctx.get("avatar") or _settings.default_avatar_url,
         "roles": ctx.get("roles") or [],
         "roleName": ctx.get("roleName") or "管理员",
         "buttons": buttons,
@@ -2339,6 +2462,42 @@ def fragment_content_change_status(
     return make_response(200, data={}, msg="状态修改成功")
 
 
+@geeker_router.post("/sys/log/list")
+@api_router.post("/sys/log/list")
+def sys_oper_log_list(
+    body: SysOperLogListBody,
+    db: Session = Depends(get_db),
+    x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
+) -> Dict[str, Any]:
+    ctx = require_user(x_access_token)
+    if not ctx:
+        return make_response(401, data={}, msg="登录过期，请重新登录")
+
+    q = db.query(SysOperLog)
+    if body.userName and body.userName.strip():
+        q = q.filter(SysOperLog.user_name.like(f"%{body.userName.strip()}%"))
+    if body.requestMethod and body.requestMethod.strip():
+        q = q.filter(SysOperLog.request_method == body.requestMethod.strip().upper())
+
+    total = q.count()
+    rows = (
+        q.order_by(SysOperLog.create_time.desc())
+        .offset((body.pageNum - 1) * body.pageSize)
+        .limit(body.pageSize)
+        .all()
+    )
+    return make_response(
+        200,
+        data={
+            "list": [_oper_log_row(r) for r in rows],
+            "pageNum": body.pageNum,
+            "pageSize": body.pageSize,
+            "total": total,
+        },
+        msg="success",
+    )
+
+
 @geeker_router.post("/file/upload")
 @geeker_router.post("/file/upload/img")
 @api_router.post("/file/upload")
@@ -2373,11 +2532,114 @@ async def file_upload(
 
 app = FastAPI(title="Geeker-Admin FastAPI Auth Center")
 
+
+def _validation_error_message(exc: RequestValidationError) -> str:
+    parts: List[str] = []
+    for err in exc.errors()[:12]:
+        loc = err.get("loc") or ()
+        loc_s = ".".join(str(x) for x in loc if x != "body")
+        msg = err.get("msg", "")
+        if loc_s:
+            parts.append(f"{loc_s}: {msg}")
+        else:
+            parts.append(str(msg))
+    return "; ".join(parts) if parts else "请求参数不合法"
+
+
+@app.exception_handler(RequestValidationError)
+async def request_validation_exception_handler(
+    request: Request, exc: RequestValidationError
+) -> JSONResponse:
+    detail = _validation_error_message(exc)
+    return JSONResponse(
+        status_code=200,
+        content={"code": 400, "msg": f"参数校验失败: {detail}", "data": None},
+        headers={"X-Geeker-Code": "400"},
+    )
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
+    msg = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+    return JSONResponse(
+        status_code=200,
+        content={"code": exc.status_code, "msg": msg, "data": None},
+        headers={"X-Geeker-Code": str(exc.status_code)},
+    )
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    traceback.print_exc()
+    logger.error("未捕获异常: %s", exc, exc_info=(type(exc), exc, exc.__traceback__))
+    return JSONResponse(
+        status_code=200,
+        content={"code": 500, "msg": "系统开小差了，请稍后再试", "data": None},
+        headers={"X-Geeker-Code": "500"},
+    )
+
+
+@app.middleware("http")
+async def oper_log_middleware(request: Request, call_next):
+    method = request.method.upper()
+    if method in ("GET", "HEAD", "OPTIONS"):
+        return await call_next(request)
+
+    path = request.url.path
+    if path.startswith("/docs") or path in ("/openapi.json", "/redoc") or path.startswith("/redoc"):
+        return await call_next(request)
+
+    access_token = request.headers.get("x-access-token")
+    ip = _client_ip(request)
+    url = path[:512]
+
+    request_param_str: Optional[str] = None
+    ct = (request.headers.get("content-type") or "").lower()
+    if "multipart/form-data" in ct:
+        request_param_str = "[multipart/form-data，未记录正文]"
+    else:
+        body_bytes = await request.body()
+        if body_bytes:
+            try:
+                request_param_str = body_bytes.decode("utf-8")[:2000]
+            except UnicodeDecodeError:
+                request_param_str = body_bytes.decode("utf-8", errors="replace")[:2000]
+        async def receive():
+            return {"type": "http.request", "body": body_bytes}
+
+        request._receive = receive  # type: ignore[method-assign]
+
+    start = time.perf_counter()
+    caught: Optional[Exception] = None
+    response: Optional[Response] = None
+    try:
+        response = await call_next(request)
+        return response
+    except Exception as e:
+        caught = e
+        raise
+    finally:
+        elapsed_ms = int((time.perf_counter() - start) * 1000)
+        status_val, err_msg = _resolve_oper_log_status(response, caught)
+        asyncio.create_task(
+            _flush_oper_log_background(
+                access_token,
+                method,
+                url,
+                ip,
+                elapsed_ms,
+                status_val,
+                err_msg,
+                request_param_str,
+            )
+        )
+
+
 app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r"http://localhost(:\d+)?|http://127\.0\.0\.1(:\d+)?",
+    allow_origin_regex=_settings.cors_allow_origin_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
