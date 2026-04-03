@@ -36,6 +36,10 @@ class Settings(BaseSettings):
         default="https://api.dicebear.com/7.x/avataaars/svg?seed=admin",
         description="默认头像 URL",
     )
+    redis_url: str = Field(
+        default="redis://127.0.0.1:6379/0",
+        description="Redis 连接 URL，如 redis://127.0.0.1:6379/0",
+    )
 
 
 @lru_cache

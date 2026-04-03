@@ -10,3 +10,4 @@ pymysql>=1.1.0
 passlib[bcrypt]>=1.7.4
 # passlib 与 bcrypt 4.1+ 不兼容，需限制版本
 bcrypt>=4.0.1,<4.1
+redis>=5.0.0

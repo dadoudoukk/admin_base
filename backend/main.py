@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 
 from core.config import get_settings
 from core.database import SessionLocal
+from core.redis_client import cache_delete, cache_get_or_set_json
 from models import (
     BizFragmentCategory,
     BizFragmentContent,
@@ -166,6 +167,41 @@ def build_auth_button_codes(rows: List[SysMenu]) -> List[str]:
     return out
 
 
+def _load_user_perms_bundle(db: Session, ctx: dict) -> Dict[str, Any]:
+    rows = fetch_button_menus_for_user(db, ctx)
+    return {
+        "codes": build_auth_button_codes(rows),
+        "buttonMap": build_auth_button_map(rows),
+    }
+
+
+def get_user_perms_bundle(db: Session, ctx: dict) -> Dict[str, Any]:
+    key = f"user:perms:{ctx['user_id']}"
+
+    def load() -> Dict[str, Any]:
+        return _load_user_perms_bundle(db, ctx)
+
+    return cache_get_or_set_json(key, 3600, load)
+
+
+def _invalidate_dict_cache(dict_code: Optional[str]) -> None:
+    c = (dict_code or "").strip()
+    if c:
+        cache_delete(f"dict:data:{c}")
+
+
+def _compute_home_statistics(db: Session) -> Dict[str, Any]:
+    return {
+        "userCount": db.query(SysUser).count(),
+        "roleCount": db.query(SysRole).count(),
+        "menuCount": db.query(SysMenu).count(),
+        "newsArticleCount": db.query(BizNewsArticle).count(),
+        "newsCategoryCount": db.query(BizNewsCategory).count(),
+        "fragmentContentCount": db.query(BizFragmentContent).count(),
+        "operLogCount": db.query(SysOperLog).count(),
+    }
+
+
 def require_permission(permission_code: str):
     def _checker(
         x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
@@ -174,8 +210,8 @@ def require_permission(permission_code: str):
         ctx = require_user(x_access_token)
         if not ctx:
             raise HTTPException(status_code=401, detail="登录过期，请重新登录")
-        rows = fetch_button_menus_for_user(db, ctx)
-        codes = set(build_auth_button_codes(rows))
+        bundle = get_user_perms_bundle(db, ctx)
+        codes = set(bundle.get("codes") or [])
         if permission_code not in codes:
             raise HTTPException(status_code=403, detail="无权限访问")
         return True
@@ -941,22 +977,29 @@ def auth_buttons(
     ctx = require_user(x_access_token)
     if not ctx:
         return make_response(401, data={}, msg="登录过期，请重新登录")
-    rows = fetch_button_menus_for_user(db, ctx)
-    return make_response(200, data=build_auth_button_map(rows), msg="success")
+    bundle = get_user_perms_bundle(db, ctx)
+    return make_response(200, data=bundle.get("buttonMap") or {}, msg="success")
 
 
 @geeker_router.get("/dict/data/{dict_code}")
 @api_router.get("/dict/data/{dict_code}")
 def dict_data_by_code(dict_code: str, db: Session = Depends(get_db)) -> Dict[str, Any]:
     code = (dict_code or "").strip()
-    rows = (
-        db.query(SysDictData)
-        .filter(SysDictData.dict_code == code)
-        .filter(SysDictData.status == True)  # noqa: E712
-        .order_by(SysDictData.sort.asc(), SysDictData.id.asc())
-        .all()
-    )
-    data = [_dict_data_row(r) for r in rows]
+    if not code:
+        return make_response(500, data=[], msg="dictCode 不能为空")
+
+    def load() -> List[Dict[str, Any]]:
+        rows = (
+            db.query(SysDictData)
+            .filter(SysDictData.dict_code == code)
+            .filter(SysDictData.status == True)  # noqa: E712
+            .order_by(SysDictData.sort.asc(), SysDictData.id.asc())
+            .all()
+        )
+        return [_dict_data_row(r) for r in rows]
+
+    key = f"dict:data:{code}"
+    data = cache_get_or_set_json(key, None, load)
     return make_response(200, data=data, msg="success")
 
 
@@ -1042,6 +1085,7 @@ def dict_type_edit(
     if not row:
         return make_response(500, data={}, msg="字典类型不存在")
 
+    old_code = row.dict_code
     dict_name = body.dictName.strip()
     dict_code = body.dictCode.strip()
     other = db.query(SysDictType).filter(SysDictType.dict_code == dict_code, SysDictType.id != did).first()
@@ -1053,6 +1097,9 @@ def dict_type_edit(
     row.status = bool(body.status)
     row.remark = body.remark
     db.commit()
+    _invalidate_dict_cache(old_code)
+    if dict_code != old_code:
+        _invalidate_dict_cache(dict_code)
     return make_response(200, data={}, msg="编辑成功")
 
 
@@ -1073,6 +1120,7 @@ def dict_type_delete(
         row = db.query(SysDictType).filter(SysDictType.id == did).first()
         if not row:
             continue
+        _invalidate_dict_cache(row.dict_code)
         db.query(SysDictData).filter(SysDictData.dict_code == row.dict_code).delete()
         db.delete(row)
         deleted += 1
@@ -1101,6 +1149,7 @@ def dict_type_change_status(
 
     row.status = bool(body.status)
     db.commit()
+    _invalidate_dict_cache(row.dict_code)
     return make_response(200, data={}, msg="状态修改成功")
 
 
@@ -1174,6 +1223,7 @@ def dict_data_add(
         )
     )
     db.commit()
+    _invalidate_dict_cache(code)
     return make_response(200, data={}, msg="新增成功")
 
 
@@ -1193,6 +1243,7 @@ def dict_data_edit(
     if not row:
         return make_response(500, data={}, msg="字典数据不存在")
 
+    prev_code = row.dict_code
     code = body.dictCode.strip()
     if not db.query(SysDictType).filter(SysDictType.dict_code == code).first():
         return make_response(500, data={}, msg="字典类型不存在")
@@ -1211,6 +1262,9 @@ def dict_data_edit(
     row.status = bool(body.status)
     row.remark = body.remark
     db.commit()
+    _invalidate_dict_cache(prev_code)
+    if code != prev_code:
+        _invalidate_dict_cache(code)
     return make_response(200, data={}, msg="编辑成功")
 
 
@@ -1226,16 +1280,20 @@ def dict_data_delete(
         return make_response(401, data={}, msg="登录过期，请重新登录")
 
     deleted = 0
+    codes_hit: Set[str] = set()
     for raw in body.id:
         did = int(raw) if not isinstance(raw, int) else raw
         row = db.query(SysDictData).filter(SysDictData.id == did).first()
         if row:
+            codes_hit.add(row.dict_code)
             db.delete(row)
             deleted += 1
     if not deleted:
         return make_response(500, data={}, msg="字典数据不存在或已删除")
 
     db.commit()
+    for c in codes_hit:
+        _invalidate_dict_cache(c)
     return make_response(200, data={}, msg="删除成功")
 
 
@@ -1257,6 +1315,7 @@ def dict_data_change_status(
 
     row.status = bool(body.status)
     db.commit()
+    _invalidate_dict_cache(row.dict_code)
     return make_response(200, data={}, msg="状态修改成功")
 
 
@@ -1269,8 +1328,8 @@ def user_info(x_access_token: Optional[str] = Header(default=None, alias="x-acce
 
     db = SessionLocal()
     try:
-        button_rows = fetch_button_menus_for_user(db, ctx)
-        buttons = build_auth_button_codes(button_rows)
+        bundle = get_user_perms_bundle(db, ctx)
+        buttons = bundle.get("codes") or []
     finally:
         db.close()
 
@@ -1853,6 +1912,23 @@ def menu_delete(
     db.delete(m)
     db.commit()
     return make_response(200, data={}, msg="删除成功")
+
+
+@geeker_router.get("/biz/home/statistics")
+@api_router.get("/biz/home/statistics")
+def biz_home_statistics(
+    db: Session = Depends(get_db),
+    x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
+) -> Dict[str, Any]:
+    ctx = require_user(x_access_token)
+    if not ctx:
+        return make_response(401, data={}, msg="登录过期，请重新登录")
+
+    def load() -> Dict[str, Any]:
+        return _compute_home_statistics(db)
+
+    data = cache_get_or_set_json("home:stats", 300, load)
+    return make_response(200, data=data, msg="success")
 
 
 @geeker_router.post("/biz/newsCategory/list")

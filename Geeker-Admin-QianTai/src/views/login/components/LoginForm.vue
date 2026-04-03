@@ -64,9 +64,18 @@ const loginForm = reactive<Login.ReqLoginForm>({
 // login
 const login = (formEl: FormInstance | undefined) => {
   if (!formEl) return;
+
+  // 1. 【核心修复】将防抖锁提前到校验之前，彻底拦截瞬间的重复点击或回车
+  if (loading.value) return; 
+  loading.value = true;
+
   formEl.validate(async valid => {
-    if (!valid) return;
-    loading.value = true;
+    if (!valid) {
+      // 2. 【核心修复】如果表单校验未通过（比如没填密码），必须把锁解开，否则按钮会一直转圈
+      loading.value = false;
+      return;
+    }
+    
     try {
       // 1.执行登录接口
       const { data } = await loginApi({ ...loginForm, password: md5(loginForm.password) });
@@ -81,6 +90,7 @@ const login = (formEl: FormInstance | undefined) => {
 
       // 4.跳转到首页
       router.push(HOME_URL);
+      
       // ElNotification({
       //   title: getTimeState(),
       //   message: "欢迎登录 Geeker-Admin",
@@ -95,6 +105,7 @@ const login = (formEl: FormInstance | undefined) => {
         duration: 8000
       });
     } finally {
+      // 无论登录成功还是失败（接口报错），最终都会进入这里解锁
       loading.value = false;
     }
   });

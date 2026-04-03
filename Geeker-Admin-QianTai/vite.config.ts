@@ -33,7 +33,9 @@ export default defineConfig(({ mode }: ConfigEnv): UserConfig => {
     css: {
       preprocessorOptions: {
         scss: {
-          additionalData: `@import "@/styles/var.scss";`
+          additionalData: `@import "@/styles/var.scss";`,
+          // 加上这行，让 sass 闭嘴，不再打印这两种弃用警告
+          silenceDeprecations: ['legacy-js-api', 'import'],
         }
       }
     },
