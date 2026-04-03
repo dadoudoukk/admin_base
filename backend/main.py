@@ -14,7 +14,18 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from core.database import SessionLocal
-from models import BizNewsArticle, BizNewsCategory, SysDictData, SysDictType, SysMenu, SysRole, SysRoleMenu, SysUser
+from models import (
+    BizFragmentCategory,
+    BizFragmentContent,
+    BizNewsArticle,
+    BizNewsCategory,
+    SysDictData,
+    SysDictType,
+    SysMenu,
+    SysRole,
+    SysRoleMenu,
+    SysUser,
+)
 
 # ========== 本地上传目录（backend/uploads）==========
 _BACKEND_DIR = Path(__file__).resolve().parent
@@ -416,6 +427,66 @@ class NewsArticleChangeStatusBody(BaseModel):
     status: int = Field(..., description="状态：0下架 1发布")
 
 
+class FragmentCategoryListBody(BaseModel):
+    pageNum: int = Field(1, ge=1, description="当前页码")
+    pageSize: int = Field(10, ge=1, le=200, description="每页条数")
+    code: Optional[str] = Field(None, description="标识码模糊搜索")
+    name: Optional[str] = Field(None, description="位置名称模糊搜索")
+
+
+class FragmentCategoryAddBody(BaseModel):
+    code: str = Field(..., min_length=1, description="标识码")
+    name: str = Field(..., min_length=1, description="位置名称")
+    remark: Optional[str] = Field(None, description="备注")
+
+
+class FragmentCategoryEditBody(BaseModel):
+    id: Union[str, int] = Field(..., description="位置 ID")
+    code: str = Field(..., min_length=1, description="标识码")
+    name: str = Field(..., min_length=1, description="位置名称")
+    remark: Optional[str] = Field(None, description="备注")
+
+
+class FragmentCategoryDeleteBody(BaseModel):
+    id: List[Union[str, int]] = Field(..., min_length=1, description="待删除位置 ID 列表")
+
+
+class FragmentContentListBody(BaseModel):
+    pageNum: int = Field(1, ge=1, description="当前页码")
+    pageSize: int = Field(10, ge=1, le=200, description="每页条数")
+    categoryId: Optional[Union[str, int]] = Field(None, description="碎片位置 ID，筛选")
+    title: Optional[str] = Field(None, description="标题模糊搜索")
+
+
+class FragmentContentAddBody(BaseModel):
+    categoryId: Union[str, int] = Field(..., description="碎片位置 ID")
+    title: str = Field(..., min_length=1, description="标题")
+    imageUrl: Optional[str] = Field(None, description="图片链接")
+    linkUrl: Optional[str] = Field(None, description="跳转链接")
+    content: Optional[str] = Field(None, description="文本内容")
+    sort: int = Field(0, description="排序")
+    status: int = Field(1, description="状态：0下线 1上线")
+
+
+class FragmentContentEditBody(BaseModel):
+    id: Union[str, int] = Field(..., description="内容 ID")
+    title: str = Field(..., min_length=1, description="标题")
+    imageUrl: Optional[str] = Field(None, description="图片链接")
+    linkUrl: Optional[str] = Field(None, description="跳转链接")
+    content: Optional[str] = Field(None, description="文本内容")
+    sort: int = Field(0, description="排序")
+    status: int = Field(1, description="状态：0下线 1上线")
+
+
+class FragmentContentDeleteBody(BaseModel):
+    id: List[Union[str, int]] = Field(..., min_length=1, description="待删除内容 ID 列表")
+
+
+class FragmentContentChangeStatusBody(BaseModel):
+    id: Union[str, int] = Field(..., description="内容 ID")
+    status: int = Field(..., description="状态：0下线 1上线")
+
+
 def menu_list_fallback() -> List[dict]:
     """数据库无可用菜单时的兜底树（至少含首页，保证能进系统）。"""
     return [
@@ -676,6 +747,32 @@ def _news_article_row(a: BizNewsArticle, category_name: str = "") -> Dict[str, A
     }
 
 
+def _fragment_category_row(c: BizFragmentCategory) -> Dict[str, Any]:
+    created = c.create_time.strftime("%Y-%m-%d %H:%M:%S") if c.create_time else ""
+    return {
+        "id": str(c.id),
+        "code": c.code,
+        "name": c.name,
+        "remark": c.remark or "",
+        "createTime": created,
+    }
+
+
+def _fragment_content_row(r: BizFragmentContent) -> Dict[str, Any]:
+    created = r.create_time.strftime("%Y-%m-%d %H:%M:%S") if r.create_time else ""
+    return {
+        "id": str(r.id),
+        "categoryId": str(r.category_id),
+        "title": r.title,
+        "imageUrl": r.image_url or "",
+        "linkUrl": r.link_url or "",
+        "content": r.content or "",
+        "sort": r.sort,
+        "status": 1 if int(r.status) == 1 else 0,
+        "createTime": created,
+    }
+
+
 geeker_router = APIRouter(prefix="/geeker")
 api_router = APIRouter(prefix="/api")
 
@@ -778,8 +875,8 @@ def dict_type_list(
     )
 
 
-@geeker_router.post("/dict/type/add")
-@api_router.post("/dict/type/add")
+@geeker_router.post("/dict/type/add", dependencies=[Depends(require_permission("dictType:add"))])
+@api_router.post("/dict/type/add", dependencies=[Depends(require_permission("dictType:add"))])
 def dict_type_add(
     body: DictTypeAddBody,
     db: Session = Depends(get_db),
@@ -806,8 +903,8 @@ def dict_type_add(
     return make_response(200, data={}, msg="新增成功")
 
 
-@geeker_router.post("/dict/type/edit")
-@api_router.post("/dict/type/edit")
+@geeker_router.post("/dict/type/edit", dependencies=[Depends(require_permission("dictType:edit"))])
+@api_router.post("/dict/type/edit", dependencies=[Depends(require_permission("dictType:edit"))])
 def dict_type_edit(
     body: DictTypeEditBody,
     db: Session = Depends(get_db),
@@ -836,8 +933,8 @@ def dict_type_edit(
     return make_response(200, data={}, msg="编辑成功")
 
 
-@geeker_router.post("/dict/type/delete")
-@api_router.post("/dict/type/delete")
+@geeker_router.post("/dict/type/delete", dependencies=[Depends(require_permission("dictType:delete"))])
+@api_router.post("/dict/type/delete", dependencies=[Depends(require_permission("dictType:delete"))])
 def dict_type_delete(
     body: DictTypeDeleteBody,
     db: Session = Depends(get_db),
@@ -863,8 +960,8 @@ def dict_type_delete(
     return make_response(200, data={}, msg="删除成功")
 
 
-@geeker_router.post("/dict/type/changeStatus")
-@api_router.post("/dict/type/changeStatus")
+@geeker_router.post("/dict/type/changeStatus", dependencies=[Depends(require_permission("dictType:edit"))])
+@api_router.post("/dict/type/changeStatus", dependencies=[Depends(require_permission("dictType:edit"))])
 def dict_type_change_status(
     body: DictTypeChangeStatusBody,
     db: Session = Depends(get_db),
@@ -926,8 +1023,8 @@ def dict_data_list(
     )
 
 
-@geeker_router.post("/dict/data/add")
-@api_router.post("/dict/data/add")
+@geeker_router.post("/dict/data/add", dependencies=[Depends(require_permission("dictData:add"))])
+@api_router.post("/dict/data/add", dependencies=[Depends(require_permission("dictData:add"))])
 def dict_data_add(
     body: DictDataAddBody,
     db: Session = Depends(get_db),
@@ -957,8 +1054,8 @@ def dict_data_add(
     return make_response(200, data={}, msg="新增成功")
 
 
-@geeker_router.post("/dict/data/edit")
-@api_router.post("/dict/data/edit")
+@geeker_router.post("/dict/data/edit", dependencies=[Depends(require_permission("dictData:edit"))])
+@api_router.post("/dict/data/edit", dependencies=[Depends(require_permission("dictData:edit"))])
 def dict_data_edit(
     body: DictDataEditBody,
     db: Session = Depends(get_db),
@@ -994,8 +1091,8 @@ def dict_data_edit(
     return make_response(200, data={}, msg="编辑成功")
 
 
-@geeker_router.post("/dict/data/delete")
-@api_router.post("/dict/data/delete")
+@geeker_router.post("/dict/data/delete", dependencies=[Depends(require_permission("dictData:delete"))])
+@api_router.post("/dict/data/delete", dependencies=[Depends(require_permission("dictData:delete"))])
 def dict_data_delete(
     body: DictDataDeleteBody,
     db: Session = Depends(get_db),
@@ -1019,8 +1116,8 @@ def dict_data_delete(
     return make_response(200, data={}, msg="删除成功")
 
 
-@geeker_router.post("/dict/data/changeStatus")
-@api_router.post("/dict/data/changeStatus")
+@geeker_router.post("/dict/data/changeStatus", dependencies=[Depends(require_permission("dictData:edit"))])
+@api_router.post("/dict/data/changeStatus", dependencies=[Depends(require_permission("dictData:edit"))])
 def dict_data_change_status(
     body: DictDataChangeStatusBody,
     db: Session = Depends(get_db),
@@ -1669,8 +1766,8 @@ def news_category_list(
     )
 
 
-@geeker_router.post("/biz/newsCategory/add")
-@api_router.post("/biz/newsCategory/add")
+@geeker_router.post("/biz/newsCategory/add", dependencies=[Depends(require_permission("newsCategory:add"))])
+@api_router.post("/biz/newsCategory/add", dependencies=[Depends(require_permission("newsCategory:add"))])
 def news_category_add(
     body: NewsCategoryAddBody,
     db: Session = Depends(get_db),
@@ -1700,8 +1797,8 @@ def news_category_add(
     return make_response(200, data={}, msg="新增成功")
 
 
-@geeker_router.post("/biz/newsCategory/edit")
-@api_router.post("/biz/newsCategory/edit")
+@geeker_router.post("/biz/newsCategory/edit", dependencies=[Depends(require_permission("newsCategory:edit"))])
+@api_router.post("/biz/newsCategory/edit", dependencies=[Depends(require_permission("newsCategory:edit"))])
 def news_category_edit(
     body: NewsCategoryEditBody,
     db: Session = Depends(get_db),
@@ -1737,8 +1834,8 @@ def news_category_edit(
     return make_response(200, data={}, msg="编辑成功")
 
 
-@geeker_router.post("/biz/newsCategory/delete")
-@api_router.post("/biz/newsCategory/delete")
+@geeker_router.post("/biz/newsCategory/delete", dependencies=[Depends(require_permission("newsCategory:delete"))])
+@api_router.post("/biz/newsCategory/delete", dependencies=[Depends(require_permission("newsCategory:delete"))])
 def news_category_delete(
     body: NewsCategoryDeleteBody,
     db: Session = Depends(get_db),
@@ -1762,8 +1859,8 @@ def news_category_delete(
     return make_response(200, data={}, msg="删除成功")
 
 
-@geeker_router.post("/biz/newsCategory/changeStatus")
-@api_router.post("/biz/newsCategory/changeStatus")
+@geeker_router.post("/biz/newsCategory/changeStatus", dependencies=[Depends(require_permission("newsCategory:edit"))])
+@api_router.post("/biz/newsCategory/changeStatus", dependencies=[Depends(require_permission("newsCategory:edit"))])
 def news_category_change_status(
     body: NewsCategoryChangeStatusBody,
     db: Session = Depends(get_db),
@@ -1844,8 +1941,8 @@ def news_article_list(
     )
 
 
-@geeker_router.post("/biz/newsArticle/add")
-@api_router.post("/biz/newsArticle/add")
+@geeker_router.post("/biz/newsArticle/add", dependencies=[Depends(require_permission("newsArticle:add"))])
+@api_router.post("/biz/newsArticle/add", dependencies=[Depends(require_permission("newsArticle:add"))])
 def news_article_add(
     body: NewsArticleAddBody,
     db: Session = Depends(get_db),
@@ -1882,8 +1979,8 @@ def news_article_add(
     return make_response(200, data={}, msg="新增成功")
 
 
-@geeker_router.post("/biz/newsArticle/edit")
-@api_router.post("/biz/newsArticle/edit")
+@geeker_router.post("/biz/newsArticle/edit", dependencies=[Depends(require_permission("newsArticle:edit"))])
+@api_router.post("/biz/newsArticle/edit", dependencies=[Depends(require_permission("newsArticle:edit"))])
 def news_article_edit(
     body: NewsArticleEditBody,
     db: Session = Depends(get_db),
@@ -1921,8 +2018,8 @@ def news_article_edit(
     return make_response(200, data={}, msg="编辑成功")
 
 
-@geeker_router.post("/biz/newsArticle/delete")
-@api_router.post("/biz/newsArticle/delete")
+@geeker_router.post("/biz/newsArticle/delete", dependencies=[Depends(require_permission("newsArticle:delete"))])
+@api_router.post("/biz/newsArticle/delete", dependencies=[Depends(require_permission("newsArticle:delete"))])
 def news_article_delete(
     body: NewsArticleDeleteBody,
     db: Session = Depends(get_db),
@@ -1946,8 +2043,8 @@ def news_article_delete(
     return make_response(200, data={}, msg="删除成功")
 
 
-@geeker_router.post("/biz/newsArticle/changeStatus")
-@api_router.post("/biz/newsArticle/changeStatus")
+@geeker_router.post("/biz/newsArticle/changeStatus", dependencies=[Depends(require_permission("newsArticle:edit"))])
+@api_router.post("/biz/newsArticle/changeStatus", dependencies=[Depends(require_permission("newsArticle:edit"))])
 def news_article_change_status(
     body: NewsArticleChangeStatusBody,
     db: Session = Depends(get_db),
@@ -1963,6 +2060,279 @@ def news_article_change_status(
     row = db.query(BizNewsArticle).filter(BizNewsArticle.id == aid).first()
     if not row:
         return make_response(500, data={}, msg="文章不存在")
+
+    row.status = body.status
+    db.commit()
+    return make_response(200, data={}, msg="状态修改成功")
+
+
+@geeker_router.post("/biz/fragment/category/list")
+@api_router.post("/biz/fragment/category/list")
+def fragment_category_list(
+    body: FragmentCategoryListBody,
+    db: Session = Depends(get_db),
+    x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
+) -> Dict[str, Any]:
+    ctx = require_user(x_access_token)
+    if not ctx:
+        return make_response(401, data={}, msg="登录过期，请重新登录")
+
+    q = db.query(BizFragmentCategory)
+    if body.code and body.code.strip():
+        q = q.filter(BizFragmentCategory.code.like(f"%{body.code.strip()}%"))
+    if body.name and body.name.strip():
+        q = q.filter(BizFragmentCategory.name.like(f"%{body.name.strip()}%"))
+
+    total = q.count()
+    rows = (
+        q.order_by(BizFragmentCategory.id.asc())
+        .offset((body.pageNum - 1) * body.pageSize)
+        .limit(body.pageSize)
+        .all()
+    )
+    return make_response(
+        200,
+        data={
+            "list": [_fragment_category_row(r) for r in rows],
+            "pageNum": body.pageNum,
+            "pageSize": body.pageSize,
+            "total": total,
+        },
+        msg="success",
+    )
+
+
+@geeker_router.post("/biz/fragment/category/add", dependencies=[Depends(require_permission("fragmentCategory:add"))])
+@api_router.post("/biz/fragment/category/add", dependencies=[Depends(require_permission("fragmentCategory:add"))])
+def fragment_category_add(
+    body: FragmentCategoryAddBody,
+    db: Session = Depends(get_db),
+    x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
+) -> Dict[str, Any]:
+    ctx = require_user(x_access_token)
+    if not ctx:
+        return make_response(401, data={}, msg="登录过期，请重新登录")
+
+    code = body.code.strip()
+    name = body.name.strip()
+    if not code or not name:
+        return make_response(500, data={}, msg="标识码与位置名称不能为空")
+    if db.query(BizFragmentCategory).filter(BizFragmentCategory.code == code).first():
+        return make_response(500, data={}, msg="标识码已存在")
+
+    db.add(BizFragmentCategory(code=code, name=name, remark=body.remark))
+    db.commit()
+    return make_response(200, data={}, msg="新增成功")
+
+
+@geeker_router.post("/biz/fragment/category/edit", dependencies=[Depends(require_permission("fragmentCategory:edit"))])
+@api_router.post("/biz/fragment/category/edit", dependencies=[Depends(require_permission("fragmentCategory:edit"))])
+def fragment_category_edit(
+    body: FragmentCategoryEditBody,
+    db: Session = Depends(get_db),
+    x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
+) -> Dict[str, Any]:
+    ctx = require_user(x_access_token)
+    if not ctx:
+        return make_response(401, data={}, msg="登录过期，请重新登录")
+
+    cid = int(body.id) if not isinstance(body.id, int) else body.id
+    row = db.query(BizFragmentCategory).filter(BizFragmentCategory.id == cid).first()
+    if not row:
+        return make_response(500, data={}, msg="位置不存在")
+
+    code = body.code.strip()
+    name = body.name.strip()
+    if not code or not name:
+        return make_response(500, data={}, msg="标识码与位置名称不能为空")
+    other = (
+        db.query(BizFragmentCategory)
+        .filter(BizFragmentCategory.code == code, BizFragmentCategory.id != cid)
+        .first()
+    )
+    if other:
+        return make_response(500, data={}, msg="标识码已存在")
+
+    row.code = code
+    row.name = name
+    row.remark = body.remark
+    db.commit()
+    return make_response(200, data={}, msg="编辑成功")
+
+
+@geeker_router.post("/biz/fragment/category/delete", dependencies=[Depends(require_permission("fragmentCategory:delete"))])
+@api_router.post("/biz/fragment/category/delete", dependencies=[Depends(require_permission("fragmentCategory:delete"))])
+def fragment_category_delete(
+    body: FragmentCategoryDeleteBody,
+    db: Session = Depends(get_db),
+    x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
+) -> Dict[str, Any]:
+    ctx = require_user(x_access_token)
+    if not ctx:
+        return make_response(401, data={}, msg="登录过期，请重新登录")
+
+    deleted = 0
+    for raw in body.id:
+        cid = int(raw) if not isinstance(raw, int) else raw
+        row = db.query(BizFragmentCategory).filter(BizFragmentCategory.id == cid).first()
+        if row:
+            db.query(BizFragmentContent).filter(BizFragmentContent.category_id == cid).delete(synchronize_session=False)
+            db.delete(row)
+            deleted += 1
+    if not deleted:
+        return make_response(500, data={}, msg="位置不存在或已删除")
+
+    db.commit()
+    return make_response(200, data={}, msg="删除成功")
+
+
+@geeker_router.post("/biz/fragment/content/list")
+@api_router.post("/biz/fragment/content/list")
+def fragment_content_list(
+    body: FragmentContentListBody,
+    db: Session = Depends(get_db),
+    x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
+) -> Dict[str, Any]:
+    ctx = require_user(x_access_token)
+    if not ctx:
+        return make_response(401, data={}, msg="登录过期，请重新登录")
+
+    q = db.query(BizFragmentContent)
+    if body.categoryId is not None and str(body.categoryId).strip() != "":
+        cat_id = int(body.categoryId) if not isinstance(body.categoryId, int) else body.categoryId
+        q = q.filter(BizFragmentContent.category_id == cat_id)
+    if body.title and body.title.strip():
+        q = q.filter(BizFragmentContent.title.like(f"%{body.title.strip()}%"))
+
+    total = q.count()
+    rows = (
+        q.order_by(BizFragmentContent.sort.asc(), BizFragmentContent.id.desc())
+        .offset((body.pageNum - 1) * body.pageSize)
+        .limit(body.pageSize)
+        .all()
+    )
+    return make_response(
+        200,
+        data={
+            "list": [_fragment_content_row(r) for r in rows],
+            "pageNum": body.pageNum,
+            "pageSize": body.pageSize,
+            "total": total,
+        },
+        msg="success",
+    )
+
+
+@geeker_router.post("/biz/fragment/content/add", dependencies=[Depends(require_permission("fragmentContent:add"))])
+@api_router.post("/biz/fragment/content/add", dependencies=[Depends(require_permission("fragmentContent:add"))])
+def fragment_content_add(
+    body: FragmentContentAddBody,
+    db: Session = Depends(get_db),
+    x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
+) -> Dict[str, Any]:
+    ctx = require_user(x_access_token)
+    if not ctx:
+        return make_response(401, data={}, msg="登录过期，请重新登录")
+
+    if body.status not in (0, 1):
+        return make_response(500, data={}, msg="状态参数无效")
+    cat_id = int(body.categoryId) if not isinstance(body.categoryId, int) else body.categoryId
+    if not db.query(BizFragmentCategory).filter(BizFragmentCategory.id == cat_id).first():
+        return make_response(500, data={}, msg="碎片位置不存在")
+
+    title = body.title.strip()
+    if not title:
+        return make_response(500, data={}, msg="标题不能为空")
+
+    db.add(
+        BizFragmentContent(
+            category_id=cat_id,
+            title=title,
+            image_url=(body.imageUrl or "").strip() or None,
+            link_url=(body.linkUrl or "").strip() or None,
+            content=body.content,
+            sort=body.sort,
+            status=body.status,
+        )
+    )
+    db.commit()
+    return make_response(200, data={}, msg="新增成功")
+
+
+@geeker_router.post("/biz/fragment/content/edit", dependencies=[Depends(require_permission("fragmentContent:edit"))])
+@api_router.post("/biz/fragment/content/edit", dependencies=[Depends(require_permission("fragmentContent:edit"))])
+def fragment_content_edit(
+    body: FragmentContentEditBody,
+    db: Session = Depends(get_db),
+    x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
+) -> Dict[str, Any]:
+    ctx = require_user(x_access_token)
+    if not ctx:
+        return make_response(401, data={}, msg="登录过期，请重新登录")
+
+    if body.status not in (0, 1):
+        return make_response(500, data={}, msg="状态参数无效")
+    rid = int(body.id) if not isinstance(body.id, int) else body.id
+    row = db.query(BizFragmentContent).filter(BizFragmentContent.id == rid).first()
+    if not row:
+        return make_response(500, data={}, msg="内容不存在")
+
+    title = body.title.strip()
+    if not title:
+        return make_response(500, data={}, msg="标题不能为空")
+
+    row.title = title
+    row.image_url = (body.imageUrl or "").strip() or None
+    row.link_url = (body.linkUrl or "").strip() or None
+    row.content = body.content
+    row.sort = body.sort
+    row.status = body.status
+    db.commit()
+    return make_response(200, data={}, msg="编辑成功")
+
+
+@geeker_router.post("/biz/fragment/content/delete", dependencies=[Depends(require_permission("fragmentContent:delete"))])
+@api_router.post("/biz/fragment/content/delete", dependencies=[Depends(require_permission("fragmentContent:delete"))])
+def fragment_content_delete(
+    body: FragmentContentDeleteBody,
+    db: Session = Depends(get_db),
+    x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
+) -> Dict[str, Any]:
+    ctx = require_user(x_access_token)
+    if not ctx:
+        return make_response(401, data={}, msg="登录过期，请重新登录")
+
+    deleted = 0
+    for raw in body.id:
+        rid = int(raw) if not isinstance(raw, int) else raw
+        r = db.query(BizFragmentContent).filter(BizFragmentContent.id == rid).first()
+        if r:
+            db.delete(r)
+            deleted += 1
+    if not deleted:
+        return make_response(500, data={}, msg="内容不存在或已删除")
+
+    db.commit()
+    return make_response(200, data={}, msg="删除成功")
+
+
+@geeker_router.post("/biz/fragment/content/changeStatus", dependencies=[Depends(require_permission("fragmentContent:edit"))])
+@api_router.post("/biz/fragment/content/changeStatus", dependencies=[Depends(require_permission("fragmentContent:edit"))])
+def fragment_content_change_status(
+    body: FragmentContentChangeStatusBody,
+    db: Session = Depends(get_db),
+    x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
+) -> Dict[str, Any]:
+    ctx = require_user(x_access_token)
+    if not ctx:
+        return make_response(401, data={}, msg="登录过期，请重新登录")
+
+    if body.status not in (0, 1):
+        return make_response(500, data={}, msg="状态参数无效")
+    rid = int(body.id) if not isinstance(body.id, int) else body.id
+    row = db.query(BizFragmentContent).filter(BizFragmentContent.id == rid).first()
+    if not row:
+        return make_response(500, data={}, msg="内容不存在")
 
     row.status = body.status
     db.commit()

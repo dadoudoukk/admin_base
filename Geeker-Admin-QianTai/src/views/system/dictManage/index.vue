@@ -2,8 +2,9 @@
   <div class="table-box">
     <ProTable ref="typeTableRef" :columns="typeColumns" :request-api="getDictTypeTableList" :data-callback="dataCallback">
       <template #tableHeader="{ selectedListIds }">
-        <el-button type="primary" :icon="CirclePlus" @click="openTypeAdd">新增字典类型</el-button>
+        <el-button v-auth="'dictType:add'" type="primary" :icon="CirclePlus" @click="openTypeAdd">新增字典类型</el-button>
         <el-button
+          v-auth="'dictType:delete'"
           type="danger"
           :icon="Delete"
           plain
@@ -15,8 +16,8 @@
       </template>
       <template #operation="scope">
         <el-button type="primary" link :icon="Setting" @click="openDataDrawer(scope.row)">字典配置</el-button>
-        <el-button type="primary" link :icon="EditPen" @click="openTypeEdit(scope.row)">编辑</el-button>
-        <el-button type="danger" link :icon="Delete" @click="deleteTypeOne(scope.row)">删除</el-button>
+        <el-button v-auth="'dictType:edit'" type="primary" link :icon="EditPen" @click="openTypeEdit(scope.row)">编辑</el-button>
+        <el-button v-auth="'dictType:delete'" type="danger" link :icon="Delete" @click="deleteTypeOne(scope.row)">删除</el-button>
       </template>
     </ProTable>
 
@@ -63,8 +64,9 @@
         :request-auto="false"
       >
         <template #tableHeader="{ selectedListIds }">
-          <el-button type="primary" :icon="CirclePlus" @click="openDataAdd">新增字典数据</el-button>
+          <el-button v-auth="'dictData:add'" type="primary" :icon="CirclePlus" @click="openDataAdd">新增字典数据</el-button>
           <el-button
+            v-auth="'dictData:delete'"
             type="danger"
             :icon="Delete"
             plain
@@ -75,8 +77,12 @@
           </el-button>
         </template>
         <template #operation="scope">
-          <el-button type="primary" link :icon="EditPen" @click="openDataEdit(scope.row)">编辑</el-button>
-          <el-button type="danger" link :icon="Delete" @click="deleteDataOne(scope.row)">删除</el-button>
+          <el-button v-auth="'dictData:edit'" type="primary" link :icon="EditPen" @click="openDataEdit(scope.row)">
+            编辑
+          </el-button>
+          <el-button v-auth="'dictData:delete'" type="danger" link :icon="Delete" @click="deleteDataOne(scope.row)">
+            删除
+          </el-button>
         </template>
       </ProTable>
     </el-drawer>

@@ -2,9 +2,9 @@
   <div class="table-box">
     <ProTable ref="proTable" :columns="columns" :request-api="getTableList" :data-callback="dataCallback">
       <template #tableHeader="{ selectedListIds }">
-        <el-button v-auth="'newsCategory:add'" type="primary" :icon="CirclePlus" @click="openAdd">新增分类</el-button>
+        <el-button v-auth="'fragmentCategory:add'" type="primary" :icon="CirclePlus" @click="openAdd">新增位置</el-button>
         <el-button
-          v-auth="'newsCategory:delete'"
+          v-auth="'fragmentCategory:delete'"
           type="danger"
           :icon="Delete"
           plain
@@ -15,27 +15,30 @@
         </el-button>
       </template>
       <template #operation="scope">
-        <el-button v-auth="'newsCategory:edit'" type="primary" link :icon="EditPen" @click="openEdit(scope.row)">编辑</el-button>
-        <el-button v-auth="'newsCategory:delete'" type="danger" link :icon="Delete" @click="deleteOne(scope.row)">删除</el-button>
+        <el-button v-auth="'fragmentCategory:add'" type="primary" link :icon="CirclePlus" @click="openAdd">新增</el-button>
+        <el-button v-auth="'fragmentCategory:edit'" type="primary" link :icon="EditPen" @click="openEdit(scope.row)">
+          编辑
+        </el-button>
+        <el-button v-auth="'fragmentCategory:delete'" type="danger" link :icon="Delete" @click="deleteOne(scope.row)">
+          删除
+        </el-button>
+        <el-button v-auth="'fragmentContent:add'" type="primary" link @click="openContent(scope.row)">内容管理</el-button>
       </template>
     </ProTable>
 
     <el-dialog
       v-model="dialogVisible"
-      :title="isEdit ? '编辑分类' : '新增分类'"
+      :title="isEdit ? '编辑碎片位置' : '新增碎片位置'"
       width="520px"
       destroy-on-close
       @closed="resetForm"
     >
       <el-form ref="formRef" :model="form" :rules="rules" label-width="100px">
-        <el-form-item label="分类名称" prop="categoryName">
-          <el-input v-model="form.categoryName" placeholder="如：公司新闻" clearable />
+        <el-form-item label="标识码" prop="code">
+          <el-input v-model="form.code" placeholder="如 home_banner" clearable />
         </el-form-item>
-        <el-form-item label="排序" prop="sort">
-          <el-input-number v-model="form.sort" :min="0" :step="1" style="width: 100%" />
-        </el-form-item>
-        <el-form-item label="状态" prop="status">
-          <el-switch v-model="form.status" :active-value="1" :inactive-value="0" />
+        <el-form-item label="位置名称" prop="name">
+          <el-input v-model="form.name" placeholder="如 首页轮播图" clearable />
         </el-form-item>
         <el-form-item label="备注" prop="remark">
           <el-input v-model="form.remark" type="textarea" :rows="3" placeholder="选填" clearable />
@@ -46,24 +49,31 @@
         <el-button type="primary" @click="submitForm">确定</el-button>
       </template>
     </el-dialog>
+
+    <FragmentContentDrawer
+      v-model="contentDrawerVisible"
+      :category-id="contentCategoryId"
+      :category-code="contentCategoryCode"
+      :category-name="contentCategoryName"
+    />
   </div>
 </template>
 
-<script setup lang="tsx" name="newsCategory">
+<script setup lang="tsx" name="fragmentManage">
 import { reactive, ref } from "vue";
 import { CirclePlus, Delete, EditPen } from "@element-plus/icons-vue";
 import { ElMessage, FormInstance } from "element-plus";
 import type { FormRules } from "element-plus";
 import ProTable from "@/components/ProTable/index.vue";
 import { ColumnProps, ProTableInstance } from "@/components/ProTable/interface";
+import FragmentContentDrawer from "./FragmentContentDrawer.vue";
 import {
-  addNewsCategory,
-  changeNewsCategoryStatus,
-  deleteNewsCategory,
-  editNewsCategory,
-  getNewsCategoryList,
-  type NewsCategoryRow
-} from "@/api/modules/news";
+  addFragmentCategory,
+  deleteFragmentCategory,
+  editFragmentCategory,
+  getFragmentCategoryList,
+  type FragmentCategoryRow
+} from "@/api/modules/fragment";
 import { useHandleData } from "@/hooks/useHandleData";
 
 const proTable = ref<ProTableInstance>();
@@ -71,16 +81,21 @@ const dialogVisible = ref(false);
 const isEdit = ref(false);
 const formRef = ref<FormInstance>();
 
+const contentDrawerVisible = ref(false);
+const contentCategoryId = ref("");
+const contentCategoryCode = ref("");
+const contentCategoryName = ref("");
+
 const form = reactive({
   id: "",
-  categoryName: "",
-  sort: 0,
-  status: 1,
+  code: "",
+  name: "",
   remark: ""
 });
 
 const rules: FormRules = {
-  categoryName: [{ required: true, message: "请输入分类名称", trigger: "blur" }]
+  code: [{ required: true, message: "请输入标识码", trigger: "blur" }],
+  name: [{ required: true, message: "请输入位置名称", trigger: "blur" }]
 };
 
 const dataCallback = (data: any) => ({
@@ -88,28 +103,33 @@ const dataCallback = (data: any) => ({
   total: data.total
 });
 
-const getTableList = (params: any) => getNewsCategoryList(JSON.parse(JSON.stringify(params)));
+const getTableList = (params: any) => getFragmentCategoryList(JSON.parse(JSON.stringify(params)));
 
 const openAdd = () => {
   isEdit.value = false;
   dialogVisible.value = true;
 };
 
-const openEdit = (row: NewsCategoryRow) => {
+const openEdit = (row: FragmentCategoryRow) => {
   isEdit.value = true;
   form.id = row.id;
-  form.categoryName = row.categoryName;
-  form.sort = Number(row.sort || 0);
-  form.status = row.status === 1 ? 1 : 0;
+  form.code = row.code || "";
+  form.name = row.name || "";
   form.remark = row.remark || "";
   dialogVisible.value = true;
 };
 
+const openContent = (row: FragmentCategoryRow) => {
+  contentCategoryId.value = row.id;
+  contentCategoryCode.value = row.code || "";
+  contentCategoryName.value = row.name || "";
+  contentDrawerVisible.value = true;
+};
+
 const resetForm = () => {
   form.id = "";
-  form.categoryName = "";
-  form.sort = 0;
-  form.status = 1;
+  form.code = "";
+  form.name = "";
   form.remark = "";
   isEdit.value = false;
   formRef.value?.clearValidate();
@@ -120,19 +140,17 @@ const submitForm = () => {
     if (!valid) return;
     try {
       if (isEdit.value) {
-        const res = await editNewsCategory({
+        const res = await editFragmentCategory({
           id: form.id,
-          categoryName: form.categoryName.trim(),
-          sort: form.sort,
-          status: form.status,
+          code: form.code.trim(),
+          name: form.name.trim(),
           remark: form.remark || undefined
         });
         ElMessage.success({ message: res.msg || "编辑成功" });
       } else {
-        const res = await addNewsCategory({
-          categoryName: form.categoryName.trim(),
-          sort: form.sort,
-          status: form.status,
+        const res = await addFragmentCategory({
+          code: form.code.trim(),
+          name: form.name.trim(),
           remark: form.remark || undefined
         });
         ElMessage.success({ message: res.msg || "新增成功" });
@@ -145,65 +163,43 @@ const submitForm = () => {
   });
 };
 
-const deleteOne = async (row: NewsCategoryRow) => {
-  await useHandleData(deleteNewsCategory, { id: [row.id] }, `删除【${row.categoryName}】分类`);
+const deleteOne = async (row: FragmentCategoryRow) => {
+  await useHandleData(deleteFragmentCategory, { id: [row.id] }, `删除【${row.name}】位置`);
   proTable.value?.getTableList();
 };
 
 const batchDelete = async (ids: string[]) => {
   if (!ids?.length) return;
-  await useHandleData(deleteNewsCategory, { id: ids }, "删除所选分类");
+  await useHandleData(deleteFragmentCategory, { id: ids }, "删除所选位置");
   proTable.value?.clearSelection();
   proTable.value?.getTableList();
 };
 
-const handleStatusBeforeChange = (row: NewsCategoryRow) => {
-  const next = row.status === 1 ? 0 : 1;
-  return changeNewsCategoryStatus({ id: row.id, status: next })
-    .then(res => {
-      ElMessage.success({ message: res.msg || "状态修改成功" });
-      row.status = next;
-      return true;
-    })
-    .catch(() => false);
-};
-
-const columns = reactive<ColumnProps<NewsCategoryRow>[]>([
+const columns = reactive<ColumnProps<FragmentCategoryRow>[]>([
   { type: "selection", fixed: "left", width: 50 },
-  { type: "index", label: "#", width: 60 },
+  { type: "index", label: "#", width: 56 },
   {
-    prop: "categoryName",
-    label: "分类名称",
+    prop: "code",
+    label: "标识码",
+    minWidth: 140,
     search: { el: "input" }
   },
   {
-    prop: "sort",
-    label: "排序",
-    width: 100
-  },
-  {
-    prop: "status",
-    label: "状态",
-    width: 100,
-    render: scope => (
-      <el-switch
-        model-value={scope.row.status}
-        active-value={1}
-        inactive-value={0}
-        beforeChange={() => handleStatusBeforeChange(scope.row)}
-      />
-    )
+    prop: "name",
+    label: "位置名称",
+    minWidth: 160,
+    search: { el: "input" }
   },
   {
     prop: "remark",
     label: "备注",
-    minWidth: 180
+    minWidth: 200
   },
   {
     prop: "createTime",
     label: "创建时间",
-    width: 180
+    width: 170
   },
-  { prop: "operation", label: "操作", fixed: "right", width: 180 }
+  { prop: "operation", label: "操作", fixed: "right", width: 320 }
 ]);
 </script>

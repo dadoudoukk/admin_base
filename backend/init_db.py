@@ -23,7 +23,16 @@ from passlib.context import CryptContext
 from sqlalchemy.orm import Session
 
 # 导入模型，确保 metadata 完整
-from models import BizNewsArticle, BizNewsCategory, SysDictData, SysDictType, SysMenu, SysRole, SysUser  # noqa: F401
+from models import (  # noqa: F401
+    BizFragmentCategory,
+    BizNewsArticle,
+    BizNewsCategory,
+    SysDictData,
+    SysDictType,
+    SysMenu,
+    SysRole,
+    SysUser,
+)
 
 from core.database import Base, SessionLocal, engine
 
@@ -213,6 +222,161 @@ def ensure_menu_manage_menu(session: Session) -> None:
 
     session.commit()
     print("已补充「系统管理 -> 菜单管理」菜单并关联超级管理员角色。")
+
+
+def ensure_button_menus_under_parent(
+    session: Session,
+    parent_menu_name: str,
+    definitions: list[tuple[str, str, int]],
+) -> None:
+    """
+    在指定父菜单（name）下批量挂 BUTTON 类型权限节点，并关联 admin 角色。
+    以 name 为权限码（与 require_permission / v-auth 一致）；可重复执行。
+    """
+    parent = session.query(SysMenu).filter(SysMenu.name == parent_menu_name).first()
+    if not parent:
+        print(f"[按钮权限] 未找到父菜单「{parent_menu_name}」，跳过。")
+        return
+    role = session.query(SysRole).filter(SysRole.code == "admin").first()
+    created = 0
+    for code, title, sort in definitions:
+        btn = session.query(SysMenu).filter(SysMenu.name == code).first()
+        if not btn:
+            btn = SysMenu(
+                parent_id=parent.id,
+                menu_type="BUTTON",
+                name=code,
+                title=title,
+                permission=code,
+                sort=sort,
+            )
+            session.add(btn)
+            session.flush()
+            created += 1
+        elif btn.parent_id != parent.id:
+            btn.parent_id = parent.id
+        if role and btn not in role.menus:
+            role.menus.append(btn)
+    session.commit()
+    print(f"[按钮权限]「{parent_menu_name}」已同步 {len(definitions)} 个按钮（本批新建 {created} 个）。")
+
+
+def ensure_business_manage_menu(session: Session) -> None:
+    """「业务管理」目录；不存在则创建并授权 admin。"""
+    parent = session.query(SysMenu).filter(SysMenu.name == "business").first()
+    if not parent:
+        parent = SysMenu(
+            parent_id=None,
+            menu_type="CATALOG",
+            name="business",
+            title="业务管理",
+            path="/business",
+            icon="Grid",
+            sort=4,
+        )
+        session.add(parent)
+        session.flush()
+
+    role = session.query(SysRole).filter(SysRole.code == "admin").first()
+    if role and parent not in role.menus:
+        role.menus.append(parent)
+
+    session.commit()
+    print("已检查「业务管理」目录并关联超级管理员角色。")
+
+
+def ensure_fragment_manage_menu(session: Session) -> None:
+    """「业务管理 -> 碎片管理」菜单并授权 admin。"""
+    parent = session.query(SysMenu).filter(SysMenu.name == "business").first()
+    if not parent:
+        print("未找到「业务管理」目录，跳过碎片管理菜单。")
+        return
+
+    child = session.query(SysMenu).filter(SysMenu.name == "fragmentManage").first()
+    if not child:
+        child = SysMenu(
+            parent_id=parent.id,
+            menu_type="MENU",
+            name="fragmentManage",
+            title="碎片管理",
+            path="/business/fragmentManage",
+            component="/business/fragmentManage/index",
+            icon="PictureFilled",
+            sort=1,
+        )
+        session.add(child)
+        session.flush()
+
+    role = session.query(SysRole).filter(SysRole.code == "admin").first()
+    if role:
+        if parent not in role.menus:
+            role.menus.append(parent)
+        if child not in role.menus:
+            role.menus.append(child)
+
+    session.commit()
+    print("已检查「业务管理 -> 碎片管理」菜单并关联超级管理员角色。")
+
+
+def ensure_fragment_category_seed(session: Session) -> None:
+    """碎片位置初始数据 home_banner。"""
+    exists = session.query(BizFragmentCategory).filter(BizFragmentCategory.code == "home_banner").first()
+    if exists:
+        print("碎片位置 home_banner 已存在，跳过初始化。")
+        return
+    session.add(BizFragmentCategory(code="home_banner", name="首页轮播图", remark=None))
+    session.commit()
+    print("已写入碎片位置初始数据：home_banner / 首页轮播图。")
+
+
+def ensure_fragment_button_menus(session: Session) -> None:
+    """碎片管理页的 6 个按钮权限。"""
+    ensure_button_menus_under_parent(
+        session,
+        "fragmentManage",
+        [
+            ("fragmentCategory:add", "碎片位置-新增", 1),
+            ("fragmentCategory:edit", "碎片位置-编辑", 2),
+            ("fragmentCategory:delete", "碎片位置-删除", 3),
+            ("fragmentContent:add", "碎片内容-新增", 4),
+            ("fragmentContent:edit", "碎片内容-编辑", 5),
+            ("fragmentContent:delete", "碎片内容-删除", 6),
+        ],
+    )
+
+
+def ensure_dict_news_button_menus(session: Session) -> None:
+    """字典管理、新闻分类、新闻列表的按钮级权限节点。"""
+    ensure_button_menus_under_parent(
+        session,
+        "dictManage",
+        [
+            ("dictType:add", "字典类型-新增", 1),
+            ("dictType:edit", "字典类型-编辑", 2),
+            ("dictType:delete", "字典类型-删除", 3),
+            ("dictData:add", "字典数据-新增", 4),
+            ("dictData:edit", "字典数据-编辑", 5),
+            ("dictData:delete", "字典数据-删除", 6),
+        ],
+    )
+    ensure_button_menus_under_parent(
+        session,
+        "newsCategory",
+        [
+            ("newsCategory:add", "新增", 1),
+            ("newsCategory:edit", "编辑", 2),
+            ("newsCategory:delete", "删除", 3),
+        ],
+    )
+    ensure_button_menus_under_parent(
+        session,
+        "newsArticle",
+        [
+            ("newsArticle:add", "新增", 1),
+            ("newsArticle:edit", "编辑", 2),
+            ("newsArticle:delete", "删除", 3),
+        ],
+    )
 
 
 def ensure_dict_manage_menu(session: Session) -> None:
@@ -425,6 +589,11 @@ def main() -> None:
         ensure_news_category_init(session)
         ensure_news_article_menu(session)
         ensure_news_article_init(session)
+        ensure_business_manage_menu(session)
+        ensure_fragment_manage_menu(session)
+        ensure_fragment_category_seed(session)
+        ensure_dict_news_button_menus(session)
+        ensure_fragment_button_menus(session)
     except Exception:
         session.rollback()
         raise

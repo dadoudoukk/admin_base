@@ -2,14 +2,21 @@
   <div class="table-box">
     <ProTable ref="proTable" :columns="columns" :request-api="getTableList" :data-callback="dataCallback">
       <template #tableHeader="{ selectedListIds }">
-        <el-button type="primary" :icon="CirclePlus" @click="openAdd">新增新闻</el-button>
-        <el-button type="danger" :icon="Delete" plain :disabled="!selectedListIds?.length" @click="batchDelete(selectedListIds)">
+        <el-button v-auth="'newsArticle:add'" type="primary" :icon="CirclePlus" @click="openAdd">新增新闻</el-button>
+        <el-button
+          v-auth="'newsArticle:delete'"
+          type="danger"
+          :icon="Delete"
+          plain
+          :disabled="!selectedListIds?.length"
+          @click="batchDelete(selectedListIds)"
+        >
           批量删除
         </el-button>
       </template>
       <template #operation="scope">
-        <el-button type="primary" link :icon="EditPen" @click="openEdit(scope.row)">编辑</el-button>
-        <el-button type="danger" link :icon="Delete" @click="deleteOne(scope.row)">删除</el-button>
+        <el-button v-auth="'newsArticle:edit'" type="primary" link :icon="EditPen" @click="openEdit(scope.row)">编辑</el-button>
+        <el-button v-auth="'newsArticle:delete'" type="danger" link :icon="Delete" @click="deleteOne(scope.row)">删除</el-button>
       </template>
     </ProTable>
 
