@@ -66,7 +66,7 @@ const login = (formEl: FormInstance | undefined) => {
   if (!formEl) return;
 
   // 1. 【核心修复】将防抖锁提前到校验之前，彻底拦截瞬间的重复点击或回车
-  if (loading.value) return; 
+  if (loading.value) return;
   loading.value = true;
 
   formEl.validate(async valid => {
@@ -75,7 +75,7 @@ const login = (formEl: FormInstance | undefined) => {
       loading.value = false;
       return;
     }
-    
+
     try {
       // 1.执行登录接口
       const { data } = await loginApi({ ...loginForm, password: md5(loginForm.password) });
@@ -90,7 +90,7 @@ const login = (formEl: FormInstance | undefined) => {
 
       // 4.跳转到首页
       router.push(HOME_URL);
-      
+
       // ElNotification({
       //   title: getTimeState(),
       //   message: "欢迎登录 Geeker-Admin",

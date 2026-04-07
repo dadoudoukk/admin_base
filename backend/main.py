@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session
 
 from core.config import get_settings
 from core.database import SessionLocal
-from core.redis_client import cache_delete, cache_get_or_set_json, cache_set_json
+from core.redis_client import cache_delete, cache_delete_by_pattern, cache_get_or_set_json, cache_set_json
 from models import (
     BizFragmentCategory,
     BizFragmentContent,
@@ -175,8 +175,11 @@ def _load_user_perms_bundle(db: Session, ctx: dict) -> Dict[str, Any]:
     }
 
 
+USER_PERMS_CACHE_PREFIX = "user:perms:"
+
+
 def get_user_perms_bundle(db: Session, ctx: dict) -> Dict[str, Any]:
-    key = f"user:perms:{ctx['user_id']}"
+    key = f"{USER_PERMS_CACHE_PREFIX}{ctx['user_id']}"
 
     def load() -> Dict[str, Any]:
         return _load_user_perms_bundle(db, ctx)
@@ -188,6 +191,14 @@ def _invalidate_dict_cache(dict_code: Optional[str]) -> None:
     c = (dict_code or "").strip()
     if c:
         cache_delete(f"dict:data:{c}")
+
+
+def _invalidate_user_perms_cache(user_id: int) -> None:
+    cache_delete(f"{USER_PERMS_CACHE_PREFIX}{user_id}")
+
+
+def _invalidate_all_user_perms_caches() -> None:
+    cache_delete_by_pattern(f"{USER_PERMS_CACHE_PREFIX}*")
 
 
 def _compute_home_statistics(db: Session) -> Dict[str, Any]:
@@ -1441,6 +1452,7 @@ def user_add(
         u.roles = roles
     db.add(u)
     db.commit()
+    _invalidate_user_perms_cache(u.id)
     return make_response(200, data={}, msg="新增成功")
 
 
@@ -1469,6 +1481,9 @@ def user_delete(
         return make_response(500, data={}, msg="用户不存在或已删除")
 
     db.commit()
+    for raw in body.id:
+        uid = int(raw) if not isinstance(raw, int) else raw
+        _invalidate_user_perms_cache(uid)
     return make_response(200, data={}, msg="删除成功")
 
 
@@ -1514,6 +1529,7 @@ def user_edit(
         u.roles = []
 
     db.commit()
+    _invalidate_user_perms_cache(uid)
     return make_response(200, data={}, msg="编辑成功")
 
 
@@ -1543,6 +1559,7 @@ def user_change_status(
 
     u.is_active = bool(body.status)
     db.commit()
+    _invalidate_user_perms_cache(uid)
     return make_response(200, data={}, msg="状态修改成功")
 
 
@@ -1702,6 +1719,7 @@ def role_delete(
         return make_response(500, data={}, msg="角色不存在或已删除")
 
     db.commit()
+    _invalidate_all_user_perms_caches()
     return make_response(200, data={}, msg="删除成功")
 
 
@@ -1795,6 +1813,7 @@ def role_assign_menu(
         db.rollback()
         raise
 
+    _invalidate_all_user_perms_caches()
     return make_response(200, data={}, msg="权限分配成功")
 
 
@@ -1833,6 +1852,7 @@ def menu_add(
     )
     db.add(m)
     db.commit()
+    _invalidate_all_user_perms_caches()
     return make_response(200, data={}, msg="新增成功")
 
 
@@ -1886,6 +1906,7 @@ def menu_edit(
         m.status = body.status
 
     db.commit()
+    _invalidate_all_user_perms_caches()
     return make_response(200, data={}, msg="编辑成功")
 
 
@@ -1911,6 +1932,7 @@ def menu_delete(
 
     db.delete(m)
     db.commit()
+    _invalidate_all_user_perms_caches()
     return make_response(200, data={}, msg="删除成功")
 
 
@@ -2650,7 +2672,7 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
     logger.error("未捕获异常: %s", exc, exc_info=(type(exc), exc, exc.__traceback__))
     return JSONResponse(
         status_code=200,
-        content={"code": 500, "msg": "系统开小差了，请稍后再试", "data": None},
+        content={"code": 500, "data": {}, "msg": str(exc)},
         headers={"X-Geeker-Code": "500"},
     )
 

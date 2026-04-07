@@ -9,6 +9,38 @@ import { AxiosCanceler } from "./helper/axiosCancel";
 import { useUserStore } from "@/stores/modules/user";
 import router from "@/routers";
 
+/** 双重序列化等场景：把响应体尽量转成可读字段的普通对象 */
+function tryParseJsonString(raw: string): unknown {
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch {
+    return null;
+  }
+}
+
+function getBusinessEnvelope(data: unknown): Record<string, unknown> | null {
+  let cur: unknown = data;
+  if (typeof cur === "string") {
+    const parsed = tryParseJsonString(cur);
+    if (parsed === null) return null;
+    cur = parsed;
+  }
+  if (cur && typeof cur === "object" && !Array.isArray(cur)) {
+    return cur as Record<string, unknown>;
+  }
+  return null;
+}
+
+/** 只取纯文案，绝不把整段 JSON/对象塞进 ElMessage */
+function pickPlainBackendMessage(obj: Record<string, unknown> | null): string {
+  if (!obj) return "";
+  for (const key of ["msg", "message", "detail"] as const) {
+    const v = obj[key];
+    if (typeof v === "string" && v.trim()) return v.trim();
+  }
+  return "";
+}
+
 export interface CustomAxiosRequestConfig extends InternalAxiosRequestConfig {
   loading?: boolean;
   cancel?: boolean;
@@ -66,16 +98,25 @@ class RequestHttp {
         const userStore = useUserStore();
         axiosCanceler.removePending(config);
         config.loading && tryHideFullScreenLoading();
+
+        const env = getBusinessEnvelope(data);
+        if (!env) {
+          return data;
+        }
+
+        const plainMsg = pickPlainBackendMessage(env);
+        const codeVal = env.code;
+
         // 登录失效
-        if (data.code == ResultEnum.OVERDUE) {
+        if (codeVal == ResultEnum.OVERDUE) {
           userStore.setToken("");
           router.replace(LOGIN_URL);
-          ElMessage.error(data.msg);
+          ElMessage.error(plainMsg || "登录已过期，请重新登录");
           return Promise.reject(data);
         }
         // 全局错误信息拦截（防止下载文件的时候返回数据流，没有 code 直接报错）
-        if (data.code && data.code !== ResultEnum.SUCCESS) {
-          ElMessage.error(data.msg);
+        if (codeVal && codeVal !== ResultEnum.SUCCESS) {
+          ElMessage.error(plainMsg || "请求失败！");
           return Promise.reject(data);
         }
         // 成功请求（在页面上除非特殊情况，否则不用处理失败逻辑）
@@ -87,8 +128,16 @@ class RequestHttp {
         // 请求超时 && 网络错误单独判断，没有 response
         if (error.message.indexOf("timeout") !== -1) ElMessage.error("请求超时！请您稍后重试");
         if (error.message.indexOf("Network Error") !== -1) ElMessage.error("网络错误！请您稍后重试");
-        // 根据服务器响应的错误状态码，做不同的处理
-        if (response) checkStatus(response.status);
+        // HTTP 4xx/5xx：优先展示后端返回的纯文本 msg/message/detail
+        if (response) {
+          const env = getBusinessEnvelope(response.data);
+          const backendMsg = pickPlainBackendMessage(env);
+          if (backendMsg) {
+            ElMessage.error(backendMsg);
+          } else {
+            checkStatus(response.status);
+          }
+        }
         // 服务器结果都没有返回(可能服务器错误可能客户端断网)，断网处理:可以跳转到断网页面
         if (!window.navigator.onLine) router.replace("/500");
         return Promise.reject(error);

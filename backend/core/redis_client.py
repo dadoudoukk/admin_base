@@ -101,6 +101,29 @@ def cache_delete(key: str) -> None:
         logger.warning("Redis DELETE 失败 [%s]：%s", key, e)
 
 
+def cache_delete_by_pattern(pattern: str) -> int:
+    """
+    按 glob 风格 match 批量删除键（SCAN + DELETE），用于 RBAC 等需整类失效的场景。
+    Redis 不可用时返回 0。
+    """
+    r = get_redis_client()
+    if not r:
+        return 0
+    total = 0
+    batch: list[str] = []
+    try:
+        for key in r.scan_iter(match=pattern, count=200):
+            batch.append(key)
+            if len(batch) >= 500:
+                total += int(r.delete(*batch))
+                batch.clear()
+        if batch:
+            total += int(r.delete(*batch))
+    except RedisError as e:
+        logger.warning("Redis SCAN/DELETE pattern [%s] 失败：%s", pattern, e)
+    return total
+
+
 def cache_get_or_set_json(key: str, ex: Optional[int], loader: Callable[[], _T]) -> _T:
     """
     先读缓存；未命中则调用 loader()，写回缓存（ex 为 None 表示永不过期，仅依赖主动删除）。
