@@ -34,6 +34,8 @@ def _build_client() -> Optional[Redis]:
             settings.redis_url,
             decode_responses=True,
             max_connections=50,
+            socket_timeout=1.5,
+            socket_connect_timeout=1.5,
         )
         _redis_client = Redis(connection_pool=_pool)
         _redis_client.ping()
@@ -70,7 +72,7 @@ def cache_set_json(key: str, value: Any, ex: Optional[int] = None) -> None:
     if not r:
         return
     try:
-        payload = json.dumps(value, ensure_ascii=False)
+        payload = json.dumps(value, ensure_ascii=False, default=list)
         if ex is not None:
             r.set(key, payload, ex=ex)
         else:
@@ -93,12 +95,23 @@ def cache_get_or_set_json(key: str, ex: Optional[int], loader: Callable[[], _T])
     """
     先读缓存；未命中则调用 loader()，写回缓存（ex 为 None 表示永不过期，仅依赖主动删除）。
     Redis 不可用时等价于直接执行 loader()。
+    loader() 的异常不在这里捕获，交由上层（如 FastAPI 全局异常处理）处理。
     """
-    cached = cache_get_json(key)
-    if cached is not None:
-        return cached  # type: ignore[return-value]
+    try:
+        cached_data = cache_get_json(key)
+        if cached_data is not None:
+            return cached_data  # type: ignore[return-value]
+    except Exception as e:
+        logger.warning("读取 Redis 缓存异常: %s", e)
+
     value = loader()
-    cache_set_json(key, value, ex=ex)
+
+    try:
+        if value is not None:
+            cache_set_json(key, value, ex=ex)
+    except Exception as e:
+        logger.warning("写入 Redis 缓存异常: %s", e)
+
     return value
 
 
