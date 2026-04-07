@@ -424,6 +424,20 @@ def ensure_dict_news_button_menus(session: Session) -> None:
     )
 
 
+def ensure_role_button_menus(session: Session) -> None:
+    """角色管理页按钮权限。"""
+    ensure_button_menus_under_parent(
+        session,
+        "roleManage",
+        [
+            ("role:add", "角色-新增", 1),
+            ("role:edit", "角色-编辑", 2),
+            ("role:delete", "角色-删除", 3),
+            ("role:auth", "角色-菜单权限", 4),
+        ],
+    )
+
+
 def ensure_dict_manage_menu(session: Session) -> None:
     """在「系统管理」下挂「字典管理」并授权 admin；已存在则跳过。"""
     parent = session.query(SysMenu).filter(SysMenu.name == "system").first()
@@ -640,6 +654,7 @@ def main() -> None:
         ensure_fragment_manage_menu(session)
         ensure_fragment_category_seed(session)
         ensure_dict_news_button_menus(session)
+        ensure_role_button_menus(session)
         ensure_fragment_button_menus(session)
     except Exception:
         session.rollback()

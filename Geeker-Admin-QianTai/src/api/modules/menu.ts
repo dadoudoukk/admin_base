@@ -10,6 +10,7 @@ export interface MenuTreeNode {
   path: string;
   name: string;
   component: string;
+  permission?: string;
   meta: { icon?: string; title?: string; [k: string]: unknown };
   sort?: number;
   remark?: string;
@@ -29,6 +30,7 @@ export const addMenu = (params: {
   path?: string;
   component?: string;
   icon?: string;
+  permission?: string;
   sort?: number;
   remark?: string;
 }) => {
@@ -44,6 +46,7 @@ export const editMenu = (params: {
   path?: string;
   component?: string;
   icon?: string;
+  permission?: string;
   sort?: number;
   remark?: string;
   status?: boolean;

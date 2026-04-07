@@ -61,6 +61,13 @@
         <el-form-item label="图标" prop="icon">
           <el-input v-model="form.icon" placeholder="Element 图标名，如 HomeFilled" clearable />
         </el-form-item>
+        <el-form-item label="权限标识" prop="permission">
+          <el-input
+            v-model="form.permission"
+            placeholder="按钮建议填写如 user:delete（按钮为空时默认回填为 name）"
+            clearable
+          />
+        </el-form-item>
         <el-form-item label="排序" prop="sort">
           <el-input-number v-model="form.sort" :min="0" controls-position="right" style="width: 100%" />
         </el-form-item>
@@ -102,6 +109,7 @@ const form = reactive({
   path: "",
   component: "",
   icon: "",
+  permission: "",
   sort: 0,
   remark: ""
 });
@@ -145,6 +153,7 @@ const resetForm = () => {
   form.path = "";
   form.component = "";
   form.icon = "";
+  form.permission = "";
   form.sort = 0;
   form.remark = "";
   formRef.value?.clearValidate();
@@ -177,6 +186,7 @@ const openEdit = (row: MenuTreeNode) => {
   form.path = row.path || "";
   form.component = row.component || "";
   form.icon = row.meta?.icon || "";
+  form.permission = row.permission || "";
   form.sort = row.sort ?? 0;
   form.remark = row.remark || "";
   dialogVisible.value = true;
@@ -197,6 +207,7 @@ const submitForm = () => {
           path: form.path || undefined,
           component: form.component || undefined,
           icon: form.icon || undefined,
+          permission: form.permission || undefined,
           sort: form.sort,
           remark: form.remark || undefined
         });
@@ -210,6 +221,7 @@ const submitForm = () => {
           path: form.path || undefined,
           component: form.component || undefined,
           icon: form.icon || undefined,
+          permission: form.permission || undefined,
           sort: form.sort,
           remark: form.remark || undefined
         });

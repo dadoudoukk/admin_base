@@ -38,6 +38,7 @@ from models import (
     SysRole,
     SysRoleMenu,
     SysUser,
+    SysUserRole,
 )
 
 logger = logging.getLogger(__name__)
@@ -117,27 +118,28 @@ def require_user(x_access_token: Optional[str]) -> Optional[dict]:
 
 
 def fetch_button_menus_for_user(db: Session, ctx: dict) -> List[SysMenu]:
-    q = db.query(SysMenu).filter(SysMenu.status == True).filter(SysMenu.menu_type == "BUTTON")  # noqa: E712
+    q = (
+        db.query(SysMenu)
+        .filter(SysMenu.status == True)  # noqa: E712
+        .filter(SysMenu.menu_type == "BUTTON")
+    )
     if ctx.get("is_superuser") or "admin" in (ctx.get("roles") or []) or ctx.get("username") == "admin":
         return q.order_by(SysMenu.sort.asc(), SysMenu.id.asc()).all()
 
-    uid = ctx["user_id"]
-    user = db.query(SysUser).filter(SysUser.id == uid).first()
-    if not user:
-        return []
-
-    merged: Dict[int, SysMenu] = {}
-    for role in user.roles:
-        for m in role.menus:
-            if m.status and m.menu_type == "BUTTON":
-                merged[m.id] = m
-    out = list(merged.values())
-    out.sort(key=lambda m: (m.sort, m.id))
-    return out
+    uid = int(ctx["user_id"])
+    return (
+        q.join(SysRoleMenu, SysRoleMenu.menu_id == SysMenu.id)
+        .join(SysUserRole, SysUserRole.role_id == SysRoleMenu.role_id)
+        .filter(SysUserRole.user_id == uid)
+        .distinct()
+        .order_by(SysMenu.sort.asc(), SysMenu.id.asc())
+        .all()
+    )
 
 
 def _button_code(m: SysMenu) -> str:
-    return ((m.name or "").strip() or (m.permission or "").strip() or (m.path or "").strip())
+    # 优先使用 permission；兼容历史数据中仅写了 name 的按钮权限
+    return (m.permission or "").strip() or (m.name or "").strip()
 
 
 def _button_owner_page_name(m: SysMenu) -> str:
@@ -329,6 +331,7 @@ class MenuAddBody(BaseModel):
     path: Optional[str] = None
     component: Optional[str] = None
     icon: Optional[str] = None
+    permission: Optional[str] = None
     sort: int = 0
     remark: Optional[str] = None
 
@@ -342,6 +345,7 @@ class MenuEditBody(BaseModel):
     path: Optional[str] = None
     component: Optional[str] = None
     icon: Optional[str] = None
+    permission: Optional[str] = None
     sort: Optional[int] = None
     remark: Optional[str] = None
     status: Optional[bool] = None
@@ -662,6 +666,7 @@ def _menu_node_all_tree(m: SysMenu) -> Dict[str, Any]:
     node["label"] = m.title
     node["menuType"] = m.menu_type
     node["parentId"] = m.parent_id
+    node["permission"] = m.permission or ""
     node["sort"] = m.sort
     node["remark"] = m.remark or ""
     return node
@@ -1909,8 +1914,8 @@ def role_all(
     return make_response(200, data=data, msg="success")
 
 
-@geeker_router.post("/role/add")
-@api_router.post("/role/add")
+@geeker_router.post("/role/add", dependencies=[Depends(require_permission("role:add"))])
+@api_router.post("/role/add", dependencies=[Depends(require_permission("role:add"))])
 def role_add(
     body: RoleAddBody,
     db: Session = Depends(get_db),
@@ -1938,8 +1943,8 @@ def role_add(
     return make_response(200, data={}, msg="新增成功")
 
 
-@geeker_router.post("/role/edit")
-@api_router.post("/role/edit")
+@geeker_router.post("/role/edit", dependencies=[Depends(require_permission("role:edit"))])
+@api_router.post("/role/edit", dependencies=[Depends(require_permission("role:edit"))])
 def role_edit(
     body: RoleEditBody,
     db: Session = Depends(get_db),
@@ -1978,8 +1983,8 @@ def role_edit(
     return make_response(200, data={}, msg="编辑成功")
 
 
-@geeker_router.post("/role/delete")
-@api_router.post("/role/delete")
+@geeker_router.post("/role/delete", dependencies=[Depends(require_permission("role:delete"))])
+@api_router.post("/role/delete", dependencies=[Depends(require_permission("role:delete"))])
 def role_delete(
     body: RoleDeleteBody,
     db: Session = Depends(get_db),
@@ -1997,6 +2002,9 @@ def role_delete(
             continue
         if role.code == "admin":
             return make_response(500, data={}, msg="不能删除超级管理员角色")
+        bind_count = db.query(SysUserRole).filter(SysUserRole.role_id == rid).count()
+        if bind_count > 0:
+            return make_response(500, data={}, msg=f"角色【{role.name}】下仍有关联用户，不能删除")
         db.delete(role)
         deleted += 1
 
@@ -2051,8 +2059,8 @@ def menu_manage_tree(
     return make_response(200, data=_query_menu_tree_for_manage(db), msg="success")
 
 
-@geeker_router.post("/role/getMenuIds")
-@api_router.post("/role/getMenuIds")
+@geeker_router.post("/role/getMenuIds", dependencies=[Depends(require_permission("role:auth"))])
+@api_router.post("/role/getMenuIds", dependencies=[Depends(require_permission("role:auth"))])
 def role_get_menu_ids(
     body: RoleMenuIdsBody,
     db: Session = Depends(get_db),
@@ -2071,8 +2079,8 @@ def role_get_menu_ids(
     return make_response(200, data=ids, msg="success")
 
 
-@geeker_router.post("/role/assignMenu")
-@api_router.post("/role/assignMenu")
+@geeker_router.post("/role/assignMenu", dependencies=[Depends(require_permission("role:auth"))])
+@api_router.post("/role/assignMenu", dependencies=[Depends(require_permission("role:auth"))])
 def role_assign_menu(
     body: RoleAssignMenuBody,
     db: Session = Depends(get_db),
@@ -2123,14 +2131,20 @@ def menu_add(
         if not parent:
             return make_response(500, data={}, msg="父级菜单不存在")
 
+    name = body.name.strip()
+    raw_permission = (body.permission or "").strip()
+    # 按钮权限默认回填为 name，兼容历史数据与菜单管理录入习惯
+    permission = raw_permission or (name if mt == "BUTTON" else None)
+
     m = SysMenu(
         parent_id=pid,
         menu_type=mt,
-        name=body.name.strip(),
+        name=name,
         title=body.title.strip(),
         path=(body.path or "").strip() or None,
         component=(body.component or "").strip() or None,
         icon=(body.icon or "").strip() or None,
+        permission=permission,
         sort=body.sort,
         remark=body.remark,
         status=True,
@@ -2183,12 +2197,18 @@ def menu_edit(
         m.component = body.component.strip() or None
     if body.icon is not None:
         m.icon = body.icon.strip() or None
+    if body.permission is not None:
+        m.permission = body.permission.strip() or None
     if body.sort is not None:
         m.sort = body.sort
     if body.remark is not None:
         m.remark = body.remark
     if body.status is not None:
         m.status = body.status
+
+    # 兜底：按钮类型但 permission 为空时，自动回填 name，避免按钮权限丢失
+    if m.menu_type == "BUTTON" and not (m.permission or "").strip():
+        m.permission = (m.name or "").strip() or None
 
     db.commit()
     _invalidate_all_user_perms_caches()

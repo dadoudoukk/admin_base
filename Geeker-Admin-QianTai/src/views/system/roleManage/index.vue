@@ -2,15 +2,22 @@
   <div class="table-box">
     <ProTable ref="proTable" :columns="columns" :request-api="getTableList" :data-callback="dataCallback">
       <template #tableHeader="{ selectedListIds }">
-        <el-button type="primary" :icon="CirclePlus" @click="openAdd">新增角色</el-button>
-        <el-button type="danger" :icon="Delete" plain :disabled="!selectedListIds?.length" @click="batchDelete(selectedListIds)">
+        <el-button v-auth="'role:add'" type="primary" :icon="CirclePlus" @click="openAdd">新增角色</el-button>
+        <el-button
+          v-auth="'role:delete'"
+          type="danger"
+          :icon="Delete"
+          plain
+          :disabled="!selectedListIds?.length"
+          @click="batchDelete(selectedListIds)"
+        >
           批量删除
         </el-button>
       </template>
       <template #operation="scope">
-        <el-button type="primary" link :icon="EditPen" @click="openEdit(scope.row)">编辑</el-button>
-        <el-button type="primary" link :icon="Key" @click="openMenuAuth(scope.row)">菜单权限</el-button>
-        <el-button type="danger" link :icon="Delete" @click="deleteOne(scope.row)">删除</el-button>
+        <el-button v-auth="'role:edit'" type="primary" link :icon="EditPen" @click="openEdit(scope.row)">编辑</el-button>
+        <el-button v-auth="'role:auth'" type="primary" link :icon="Key" @click="openMenuAuth(scope.row)">菜单权限</el-button>
+        <el-button v-auth="'role:delete'" type="danger" link :icon="Delete" @click="deleteOne(scope.row)">删除</el-button>
       </template>
     </ProTable>
 
