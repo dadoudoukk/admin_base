@@ -24,10 +24,13 @@ export const addUser = (params: any) => {
   return http.post(PORT1 + `/user/add`, params);
 };
 
-// 批量添加用户
-export const BatchAddUser = (params: FormData) => {
+// 导入用户数据
+export const importUser = (params: FormData) => {
   return http.post(PORT1 + `/user/import`, params);
 };
+
+// 兼容历史命名
+export const BatchAddUser = importUser;
 
 // 编辑用户（不改密码）
 export const editUser = (params: {
@@ -58,8 +61,16 @@ export const resetUserPassWord = (params: { id: string }) => {
 };
 
 // 导出用户数据
-export const exportUserInfo = (params: User.ReqUserParams) => {
+export const exportUser = (params: User.ReqUserParams) => {
   return http.download(PORT1 + `/user/export`, params);
+};
+
+// 兼容历史命名
+export const exportUserInfo = exportUser;
+
+// 下载用户导入模板
+export const exportUserTemplate = () => {
+  return http.download(PORT1 + `/user/template`, {});
 };
 
 // 获取用户状态字典

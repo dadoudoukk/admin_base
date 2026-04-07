@@ -1,6 +1,12 @@
 <template>
   <div class="table-box">
-    <ProTable ref="proTable" :columns="columns" :request-api="getTableList" :data-callback="dataCallback" />
+    <ProTable ref="proTable" :columns="columns" :request-api="getTableList" :data-callback="dataCallback">
+      <template #tableHeader>
+        <el-button v-auth="'log:export'" type="primary" plain :icon="Download" :loading="exportLoading" @click="exportList">
+          导出 Excel
+        </el-button>
+      </template>
+    </ProTable>
 
     <el-dialog v-model="detailVisible" title="请求参数详情" width="640px" destroy-on-close append-to-body>
       <el-scrollbar max-height="420px">
@@ -12,13 +18,18 @@
 
 <script setup lang="tsx" name="systemLog">
 import { reactive, ref } from "vue";
+import { Download } from "@element-plus/icons-vue";
+import { ElMessage } from "element-plus";
 import ProTable from "@/components/ProTable/index.vue";
 import { ColumnProps, ProTableInstance } from "@/components/ProTable/interface";
-import { getSystemLogList, type SystemOperLogRow } from "@/api/modules/system";
+import { exportSystemLog, getSystemLogList, type SystemOperLogRow } from "@/api/modules/system";
+import { useDownload } from "@/hooks/useDownload";
+import { cleanExportParams } from "@/utils";
 
 const proTable = ref<ProTableInstance>();
 const detailVisible = ref(false);
 const detailText = ref("");
+const exportLoading = ref(false);
 
 const dataCallback = (data: any) => ({
   list: data.list,
@@ -26,6 +37,20 @@ const dataCallback = (data: any) => ({
 });
 
 const getTableList = (params: any) => getSystemLogList(JSON.parse(JSON.stringify(params)));
+const getExportParams = () => {
+  return cleanExportParams(JSON.parse(JSON.stringify(proTable.value?.searchParam || {})));
+};
+
+const exportList = async () => {
+  if (exportLoading.value) return;
+  ElMessage.info("正在导出，请稍后...");
+  exportLoading.value = true;
+  try {
+    await useDownload(exportSystemLog, `系统日志_${Date.now()}`, getExportParams(), false);
+  } finally {
+    exportLoading.value = false;
+  }
+};
 
 const openParamDetail = (raw: string) => {
   detailText.value = raw || "";

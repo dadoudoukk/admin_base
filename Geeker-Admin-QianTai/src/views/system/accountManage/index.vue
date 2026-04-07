@@ -1,8 +1,12 @@
 <template>
-  <div class="table-box">
+  <div v-waterMarker="waterMarkerConfig" class="table-box">
     <ProTable ref="proTable" :columns="columns" :request-api="getTableList" :data-callback="dataCallback">
       <template #tableHeader="{ selectedListIds }">
         <el-button v-auth="'user:add'" type="primary" :icon="CirclePlus" @click="openAdd">新增用户</el-button>
+        <el-button v-auth="'user:export'" type="primary" plain :icon="Download" :loading="exportLoading" @click="exportList">
+          导出 Excel
+        </el-button>
+        <el-button v-auth="'user:import'" type="primary" plain :icon="Upload" @click="batchImport">批量导入</el-button>
         <el-button
           v-auth="'user:delete'"
           type="danger"
@@ -66,28 +70,50 @@
         <el-button type="primary" @click="submitForm">确定</el-button>
       </template>
     </el-dialog>
+
+    <ImportExcel ref="importRef" />
   </div>
 </template>
 
 <script setup lang="tsx" name="accountManage">
 import { computed, onMounted, reactive, ref } from "vue";
-import { CirclePlus, Delete, EditPen } from "@element-plus/icons-vue";
+import { CirclePlus, Delete, Download, EditPen, Upload } from "@element-plus/icons-vue";
 import { ElMessage, FormInstance } from "element-plus";
 import type { FormRules } from "element-plus";
 import ProTable from "@/components/ProTable/index.vue";
 import { ColumnProps, ProTableInstance } from "@/components/ProTable/interface";
 import { User } from "@/api/interface";
-import { getUserList, addUser, deleteUser, editUser, changeUserStatus } from "@/api/modules/user";
+import {
+  getUserList,
+  addUser,
+  deleteUser,
+  editUser,
+  changeUserStatus,
+  exportUser,
+  importUser,
+  exportUserTemplate
+} from "@/api/modules/user";
 import { getDictByCode, type DictOption } from "@/api/modules/dict";
 import { getAllRoleList, type RoleOption } from "@/api/modules/role";
+import { useDownload } from "@/hooks/useDownload";
 import { useHandleData } from "@/hooks/useHandleData";
+import { cleanExportParams } from "@/utils";
+import ImportExcel from "@/components/ImportExcel/index.vue";
+import { useUserStore } from "@/stores/modules/user";
 
 const proTable = ref<ProTableInstance>();
+const userStore = useUserStore();
 const addVisible = ref(false);
 const isEdit = ref(false);
 const addFormRef = ref<FormInstance>();
+const importRef = ref<InstanceType<typeof ImportExcel> | null>(null);
 const sexDictOptions = ref<DictOption[]>([]);
 const roleOptions = ref<RoleOption[]>([]);
+const exportLoading = ref(false);
+const waterMarkerConfig = computed(() => ({
+  text: userStore.userInfo?.name || "当前用户",
+  textColor: "rgba(0, 0, 0, 0.08)"
+}));
 
 const addForm = reactive({
   id: "",
@@ -117,6 +143,28 @@ const dataCallback = (data: any) => ({
 });
 
 const getTableList = (params: any) => getUserList(JSON.parse(JSON.stringify(params)));
+const getExportParams = () => {
+  return cleanExportParams(JSON.parse(JSON.stringify(proTable.value?.searchParam || {})));
+};
+
+const exportList = async () => {
+  if (exportLoading.value) return;
+  exportLoading.value = true;
+  try {
+    await useDownload(exportUser, `用户列表_${Date.now()}`, getExportParams(), false);
+  } finally {
+    exportLoading.value = false;
+  }
+};
+
+const batchImport = () => {
+  importRef.value?.acceptParams({
+    title: "用户",
+    tempApi: exportUserTemplate,
+    importApi: importUser,
+    getTableList: () => proTable.value?.getTableList()
+  });
+};
 
 const openAdd = () => {
   isEdit.value = false;

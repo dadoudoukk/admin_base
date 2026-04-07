@@ -71,7 +71,6 @@
 
           <div class="form-group">
             <label for="password">密码</label>
-            <a href="#" class="forgot-password">忘记密码？</a>
             <div style="position: relative">
               <input
                 id="password"
@@ -117,8 +116,6 @@
 
           <button type="submit" class="btn-primary">登录</button>
         </form>
-
-        <div class="form-footer">还没有账号？ <a href="#" class="sign-up-link">立即注册</a></div>
       </div>
     </div>
   </div>
@@ -483,19 +480,6 @@ input:focus {
   fill: none;
 }
 
-.forgot-password {
-  position: absolute;
-  top: -24px;
-  right: 0;
-  font-size: 0.85rem;
-  font-weight: 500;
-  color: var(--primary-purple);
-  text-decoration: none;
-}
-.forgot-password:hover {
-  text-decoration: underline;
-}
-
 .btn-primary {
   width: 100%;
   padding: 14px;
@@ -511,20 +495,5 @@ input:focus {
 }
 .btn-primary:hover {
   background-color: #333;
-}
-
-.form-footer {
-  margin-top: 30px;
-  font-size: 0.9rem;
-  color: var(--form-text);
-  text-align: center;
-}
-.sign-up-link {
-  font-weight: bold;
-  color: var(--primary-purple);
-  text-decoration: none;
-}
-.sign-up-link:hover {
-  text-decoration: underline;
 }
 </style>

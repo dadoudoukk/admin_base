@@ -254,6 +254,34 @@ export function formatValue(callValue: any) {
 }
 
 /**
+ * @description 清洗导出参数：移除空字符串/null/undefined，避免后端收到脏参数
+ */
+export function cleanExportParams<T extends Record<string, any>>(params: T): Partial<T> {
+  const walk = (value: any): any => {
+    if (value === undefined || value === null) return undefined;
+    if (typeof value === "string") {
+      const trimmed = value.trim();
+      return trimmed === "" ? undefined : trimmed;
+    }
+    if (Array.isArray(value)) {
+      const list = value.map(item => walk(item)).filter(item => item !== undefined);
+      return list.length ? list : undefined;
+    }
+    if (Object.prototype.toString.call(value) === "[object Object]") {
+      const obj: Record<string, any> = {};
+      Object.keys(value).forEach(key => {
+        const next = walk(value[key]);
+        if (next !== undefined) obj[key] = next;
+      });
+      return Object.keys(obj).length ? obj : undefined;
+    }
+    return value;
+  };
+
+  return (walk(params) || {}) as Partial<T>;
+}
+
+/**
  * @description 处理 prop 为多级嵌套的情况，返回的数据 (列如: prop: user.name)
  * @param {Object} row 当前行数据
  * @param {String} prop 当前 prop

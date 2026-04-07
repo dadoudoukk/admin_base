@@ -18,3 +18,8 @@ export interface SystemOperLogRow {
 export const getSystemLogList = (params: { pageNum: number; pageSize: number; userName?: string; requestMethod?: string }) => {
   return http.post<ResPage<SystemOperLogRow>>(PORT1 + `/sys/log/list`, params);
 };
+
+// 导出系统日志
+export const exportSystemLog = (params: { userName?: string; requestMethod?: string }) => {
+  return http.download(PORT1 + `/sys/log/export`, params);
+};
