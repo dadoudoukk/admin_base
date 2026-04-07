@@ -20,6 +20,7 @@ _T = TypeVar("_T")
 _pool: Optional[ConnectionPool] = None
 _redis_client: Optional[Redis] = None
 _redis_init_failed: bool = False
+_redis_connect_info_logged: bool = False
 
 
 def _build_client() -> Optional[Redis]:
@@ -50,11 +51,17 @@ def _build_client() -> Optional[Redis]:
 
 def get_redis_client() -> Optional[Redis]:
     """返回 Redis 客户端；若不可用则返回 None（静默降级）。"""
-    return _build_client()
+    global _redis_connect_info_logged
+    r = _build_client()
+    if r is not None and not _redis_connect_info_logged:
+        _redis_connect_info_logged = True
+        settings = get_settings()
+        logger.info("Redis连接成功，当前地址: %s", settings.redis_url)
+    return r
 
 
 def cache_get_json(key: str) -> Optional[Any]:
-    r = _build_client()
+    r = get_redis_client()
     if not r:
         return None
     try:
@@ -67,22 +74,25 @@ def cache_get_json(key: str) -> Optional[Any]:
         return None
 
 
-def cache_set_json(key: str, value: Any, ex: Optional[int] = None) -> None:
-    r = _build_client()
+def cache_set_json(key: str, value: Any, ex: Optional[int] = None) -> bool:
+    logger.info("正在写入缓存键: %s", key)
+    r = get_redis_client()
     if not r:
-        return
+        return False
     try:
         payload = json.dumps(value, ensure_ascii=False, default=list)
         if ex is not None:
             r.set(key, payload, ex=ex)
         else:
             r.set(key, payload)
+        return True
     except (RedisError, TypeError, ValueError) as e:
         logger.warning("Redis SET 失败 [%s]，跳过缓存：%s", key, e)
+        return False
 
 
 def cache_delete(key: str) -> None:
-    r = _build_client()
+    r = get_redis_client()
     if not r:
         return
     try:

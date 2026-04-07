@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session
 
 from core.config import get_settings
 from core.database import SessionLocal
-from core.redis_client import cache_delete, cache_get_or_set_json
+from core.redis_client import cache_delete, cache_get_or_set_json, cache_set_json
 from models import (
     BizFragmentCategory,
     BizFragmentContent,
