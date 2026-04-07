@@ -77,7 +77,7 @@
                 id="password"
                 v-model="loginForm.password"
                 :type="passwordType"
-                placeholder="••••••••"
+                placeholder="请输入密码"
                 autocomplete="current-password"
                 @focus="isPeeking = true"
                 @blur="isPeeking = false"
@@ -480,7 +480,7 @@ input:focus {
 .password-toggle svg {
   width: 20px;
   height: 20px;
-  fill: currentColor;
+  fill: none;
 }
 
 .forgot-password {
