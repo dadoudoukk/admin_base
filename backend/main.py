@@ -5,10 +5,14 @@ import shutil
 import time
 import traceback
 import uuid
+from datetime import datetime
+from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Union
+from urllib.parse import quote
 
 import jwt
+import pandas as pd
 from fastapi import APIRouter, Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -238,6 +242,11 @@ class LoginBody(BaseModel):
 class UserListBody(BaseModel):
     pageNum: int = Field(1, ge=1, description="当前页码")
     pageSize: int = Field(10, ge=1, le=200, description="每页条数")
+    username: Optional[str] = Field(None, description="账号模糊搜索")
+    gender: Optional[str] = Field(None, description="性别字典值，如 1/2/3")
+
+
+class UserExportBody(BaseModel):
     username: Optional[str] = Field(None, description="账号模糊搜索")
     gender: Optional[str] = Field(None, description="性别字典值，如 1/2/3")
 
@@ -547,6 +556,13 @@ class SysOperLogListBody(BaseModel):
     requestMethod: Optional[str] = Field(None, description="请求方式，如 POST")
 
 
+class SysOperLogExportBody(BaseModel):
+    userName: Optional[str] = Field(None, description="操作人模糊搜索")
+    requestMethod: Optional[str] = Field(None, description="请求方式，如 POST")
+    startTime: Optional[str] = Field(None, description="开始时间，格式 YYYY-MM-DD HH:mm:ss")
+    endTime: Optional[str] = Field(None, description="结束时间，格式 YYYY-MM-DD HH:mm:ss")
+
+
 def menu_list_fallback() -> List[dict]:
     """数据库无可用菜单时的兜底树（至少含首页，保证能进系统）。"""
     return [
@@ -849,6 +865,40 @@ def _oper_log_row(r: SysOperLog) -> Dict[str, Any]:
     }
 
 
+def _parse_datetime_text(raw: Optional[str]) -> Optional[datetime]:
+    text = (raw or "").strip()
+    if not text:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _build_sys_log_export_query(
+    db: Session,
+    user_name: Optional[str],
+    request_method: Optional[str],
+    start_time: Optional[str],
+    end_time: Optional[str],
+):
+    q = db.query(SysOperLog)
+    if user_name and user_name.strip():
+        q = q.filter(SysOperLog.user_name.like(f"%{user_name.strip()}%"))
+    if request_method and request_method.strip():
+        q = q.filter(SysOperLog.request_method == request_method.strip().upper())
+
+    start_dt = _parse_datetime_text(start_time)
+    end_dt = _parse_datetime_text(end_time)
+    if start_dt is not None:
+        q = q.filter(SysOperLog.create_time >= start_dt)
+    if end_dt is not None:
+        q = q.filter(SysOperLog.create_time <= end_dt)
+    return q.order_by(SysOperLog.create_time.desc())
+
+
 def _client_ip(request: Request) -> str:
     forwarded = request.headers.get("x-forwarded-for")
     if forwarded:
@@ -963,6 +1013,8 @@ def login(body: LoginBody, db: Session = Depends(get_db)) -> Dict[str, Any]:
 
 @geeker_router.get("/menu/list")
 @api_router.get("/menu/list")
+@geeker_router.get("/auth/menuList")
+@api_router.get("/auth/menuList")
 def menu_list(
     x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
     db: Session = Depends(get_db),
@@ -990,6 +1042,19 @@ def auth_buttons(
         return make_response(401, data={}, msg="登录过期，请重新登录")
     bundle = get_user_perms_bundle(db, ctx)
     return make_response(200, data=bundle.get("buttonMap") or {}, msg="success")
+
+
+@geeker_router.get("/auth/buttonList")
+@api_router.get("/auth/buttonList")
+def auth_button_list(
+    x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    ctx = require_user(x_access_token)
+    if not ctx:
+        return make_response(401, data=[], msg="登录过期，请重新登录")
+    bundle = get_user_perms_bundle(db, ctx)
+    return make_response(200, data=bundle.get("codes") or [], msg="success")
 
 
 @geeker_router.get("/dict/data/{dict_code}")
@@ -1573,6 +1638,226 @@ def _role_row(r: SysRole) -> Dict[str, Any]:
         "status": 1 if r.is_active else 0,
         "createTime": created,
     }
+
+
+def _safe_cell_to_str(val: Any) -> str:
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return ""
+    return str(val).strip()
+
+
+def _gender_to_label(gender: Optional[str]) -> str:
+    gv = str(gender or "3").strip()
+    return {"1": "男", "2": "女", "3": "未知"}.get(gv, "未知")
+
+
+def _gender_to_value(gender_label: str) -> str:
+    label = (gender_label or "").strip()
+    mapping = {
+        "男": "1",
+        "1": "1",
+        "女": "2",
+        "2": "2",
+        "未知": "3",
+        "3": "3",
+    }
+    return mapping.get(label, "3")
+
+
+def _prepare_user_export_query(db: Session, username: Optional[str], gender: Optional[str]):
+    q = db.query(SysUser)
+    if username and username.strip():
+        q = q.filter(SysUser.username.like(f"%{username.strip()}%"))
+    if gender is not None and str(gender).strip() != "":
+        q = q.filter(SysUser.gender == str(gender).strip())
+    return q.order_by(SysUser.id.desc())
+
+
+@geeker_router.get("/user/template")
+@geeker_router.post("/user/template")
+@api_router.get("/user/template")
+@api_router.post("/user/template")
+def user_template_download(
+    x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
+) -> Response:
+    ctx = require_user(x_access_token)
+    if not ctx:
+        raise HTTPException(status_code=401, detail="登录过期，请重新登录")
+
+    template_rows = [
+        {
+            "用户名": "zhangsan",
+            "姓名": "张三",
+            "性别": "男",
+            "手机号": "13800138000",
+            "邮箱": "zhangsan@example.com",
+            "角色": "普通用户",
+        }
+    ]
+    df = pd.DataFrame(template_rows, columns=["用户名", "姓名", "性别", "手机号", "邮箱", "角色"])
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name="用户导入模板")
+    excel_bytes = output.getvalue()
+    filename = "用户导入模板.xlsx"
+    quoted_name = quote(filename)
+    headers = {
+        "Content-Disposition": f"attachment; filename={quoted_name}; filename*=UTF-8''{quoted_name}",
+        "Content-Length": str(len(excel_bytes)),
+    }
+    return Response(
+        content=excel_bytes,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers=headers,
+    )
+
+
+@geeker_router.post("/user/export")
+@api_router.post("/user/export")
+def user_export(
+    body: Optional[UserExportBody] = None,
+    db: Session = Depends(get_db),
+    x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
+) -> Response:
+    ctx = require_user(x_access_token)
+    if not ctx:
+        raise HTTPException(status_code=401, detail="登录过期，请重新登录")
+
+    query_body = body or UserExportBody()
+    users = _prepare_user_export_query(db, query_body.username, query_body.gender).all()
+
+    rows: List[Dict[str, Any]] = []
+    for u in users:
+        role_names = "、".join([r.name for r in (u.roles or []) if (r.name or "").strip()])
+        rows.append(
+            {
+                "用户名": u.username,
+                "姓名": u.nickname or "",
+                "性别": _gender_to_label(u.gender),
+                "手机号": u.phone or "",
+                "邮箱": u.email or "",
+                "角色": role_names,
+                "状态": "启用" if u.is_active else "禁用",
+                "创建时间": u.created_at.strftime("%Y-%m-%d %H:%M:%S") if u.created_at else "",
+            }
+        )
+
+    df = pd.DataFrame(
+        rows,
+        columns=["用户名", "姓名", "性别", "手机号", "邮箱", "角色", "状态", "创建时间"],
+    )
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name="用户列表")
+    excel_bytes = output.getvalue()
+
+    ts = datetime.now().strftime("%Y%m%d%H%M%S")
+    filename = f"用户列表_{ts}.xlsx"
+    quoted_name = quote(filename)
+    headers = {
+        "Content-Disposition": f"attachment; filename={quoted_name}; filename*=UTF-8''{quoted_name}",
+        "Content-Length": str(len(excel_bytes)),
+    }
+    return Response(
+        content=excel_bytes,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers=headers,
+    )
+
+
+@geeker_router.post("/user/import")
+@api_router.post("/user/import")
+async def user_import(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
+) -> Dict[str, Any]:
+    ctx = require_user(x_access_token)
+    if not ctx:
+        return make_response(401, data={}, msg="登录过期，请重新登录")
+
+    required_cols = ["用户名", "姓名", "性别", "手机号", "邮箱", "角色"]
+    try:
+        file_bytes = await file.read()
+        dataframe = pd.read_excel(BytesIO(file_bytes), engine="openpyxl")
+    except Exception as exc:
+        return make_response(500, data={}, msg=f"读取 Excel 失败: {exc}")
+    finally:
+        await file.close()
+
+    for col in required_cols:
+        if col not in dataframe.columns:
+            return make_response(500, data={}, msg=f"导入失败，缺少列: {col}")
+
+    role_rows = db.query(SysRole).filter(SysRole.is_active == True).all()  # noqa: E712
+    role_map = {r.name.strip(): r for r in role_rows if (r.name or "").strip()}
+
+    success_count = 0
+    failed_details: List[str] = []
+    pending_users: List[SysUser] = []
+    pending_relations: List[tuple[SysUser, List[SysRole]]] = []
+    in_batch_usernames: Set[str] = set()
+
+    for idx, row in dataframe.iterrows():
+        line_no = idx + 2
+        username = _safe_cell_to_str(row.get("用户名"))
+        nickname = _safe_cell_to_str(row.get("姓名"))
+        gender = _gender_to_value(_safe_cell_to_str(row.get("性别")))
+        phone = _safe_cell_to_str(row.get("手机号"))
+        email = _safe_cell_to_str(row.get("邮箱"))
+        role_raw = _safe_cell_to_str(row.get("角色"))
+
+        if not username:
+            failed_details.append(f"第{line_no}行: 用户名不能为空")
+            continue
+        if username in in_batch_usernames or db.query(SysUser).filter(SysUser.username == username).first():
+            failed_details.append(f"第{line_no}行: 用户名[{username}]已存在")
+            continue
+
+        role_names = [x.strip() for x in role_raw.replace("，", ",").replace("、", ",").split(",") if x.strip()]
+        bind_roles = [role_map[rn] for rn in role_names if rn in role_map]
+        missing_roles = [rn for rn in role_names if rn not in role_map]
+        if missing_roles:
+            failed_details.append(f"第{line_no}行: 角色不存在[{','.join(missing_roles)}]")
+            continue
+
+        user = SysUser(
+            username=username,
+            password=pwd_context.hash("123456"),
+            nickname=nickname or None,
+            email=email or None,
+            phone=phone or None,
+            gender=gender,
+            is_active=True,
+            is_superuser=False,
+        )
+        pending_users.append(user)
+        pending_relations.append((user, bind_roles))
+        in_batch_usernames.add(username)
+        success_count += 1
+
+    if pending_users:
+        try:
+            for user, roles in pending_relations:
+                user.roles = roles
+                db.add(user)
+            db.commit()
+            for user in pending_users:
+                _invalidate_user_perms_cache(user.id)
+        except Exception as exc:
+            db.rollback()
+            return make_response(500, data={}, msg=f"导入失败，数据库写入异常: {exc}")
+
+    fail_count = len(failed_details)
+    return make_response(
+        200,
+        data={
+            "successCount": success_count,
+            "failCount": fail_count,
+            "failReasons": failed_details,
+        },
+        msg=f"导入完成，成功{success_count}条，失败{fail_count}条",
+    )
 
 
 @geeker_router.post("/role/list")
@@ -2593,6 +2878,76 @@ def sys_oper_log_list(
             "total": total,
         },
         msg="success",
+    )
+
+
+@geeker_router.post("/sys/log/export")
+@geeker_router.get("/sys/log/export")
+@api_router.post("/sys/log/export")
+@api_router.get("/sys/log/export")
+def sys_oper_log_export(
+    body: Optional[SysOperLogExportBody] = None,
+    userName: Optional[str] = None,
+    requestMethod: Optional[str] = None,
+    startTime: Optional[str] = None,
+    endTime: Optional[str] = None,
+    db: Session = Depends(get_db),
+    x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
+) -> Response:
+    ctx = require_user(x_access_token)
+    if not ctx:
+        raise HTTPException(status_code=401, detail="登录过期，请重新登录")
+
+    query_user_name = (body.userName if body else None) or userName
+    query_request_method = (body.requestMethod if body else None) or requestMethod
+    query_start_time = (body.startTime if body else None) or startTime
+    query_end_time = (body.endTime if body else None) or endTime
+
+    rows = _build_sys_log_export_query(
+        db,
+        query_user_name,
+        query_request_method,
+        query_start_time,
+        query_end_time,
+    ).all()
+
+    export_rows: List[Dict[str, Any]] = []
+    for item in rows:
+        export_rows.append(
+            {
+                "操作人": item.user_name or "",
+                "请求方式": item.request_method,
+                "操作模块": item.request_url,
+                "请求路径": item.request_url,
+                "操作IP": item.request_ip,
+                "执行耗时(ms)": item.execute_time,
+                "执行状态": "成功" if int(item.status) == 1 else "失败",
+                "错误信息": item.error_msg or "",
+                "请求参数": item.request_param or "",
+                "操作时间": item.create_time.strftime("%Y-%m-%d %H:%M:%S") if item.create_time else "",
+            }
+        )
+
+    df = pd.DataFrame(
+        export_rows,
+        columns=["操作人", "请求方式", "操作模块", "请求路径", "操作IP", "执行耗时(ms)", "执行状态", "错误信息", "请求参数", "操作时间"],
+    )
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name="系统日志")
+    excel_bytes = output.getvalue()
+
+    ts = datetime.now().strftime("%Y%m%d%H%M%S")
+    filename = f"系统日志_{ts}.xlsx"
+    quoted_name = quote(filename)
+    headers = {
+        "Content-Disposition": f"attachment; filename={quoted_name}; filename*=UTF-8''{quoted_name}",
+        "Content-Length": str(len(excel_bytes)),
+    }
+    return Response(
+        content=excel_bytes,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers=headers,
     )
 
 

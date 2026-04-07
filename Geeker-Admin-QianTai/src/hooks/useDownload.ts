@@ -26,6 +26,23 @@ export const useDownload = async (
   try {
     const res = await api(params);
     const blob = new Blob([res]);
+    const blobType = (blob.type || "").toLowerCase();
+    if (blobType.includes("application/json") || blobType.includes("text/plain")) {
+      const text = await blob.text();
+      let msg = "导出失败，请稍后重试";
+      try {
+        const parsed = JSON.parse(text);
+        if (parsed && typeof parsed.msg === "string" && parsed.msg.trim()) msg = parsed.msg.trim();
+      } catch {
+        if (text.trim()) msg = text.slice(0, 120);
+      }
+      ElNotification({
+        title: "导出失败",
+        message: msg,
+        type: "error"
+      });
+      return;
+    }
     // 兼容 edge 不支持 createObjectURL 方法
     if ("msSaveOrOpenBlob" in navigator) return window.navigator.msSaveOrOpenBlob(blob, tempName + fileType);
     const blobUrl = window.URL.createObjectURL(blob);
