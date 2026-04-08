@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import sys
 from pathlib import Path
 
@@ -37,7 +38,9 @@ from models import (  # noqa: F401
     SysUser,
 )
 
-from core.database import Base, SessionLocal, engine, DATABASE_URL
+from core.database import AsyncSessionLocal, Base, DATABASE_URL, async_engine
+
+engine = async_engine.sync_engine
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -754,7 +757,7 @@ def ensure_root_department_and_backfill(session: Session) -> None:
     print("已检查默认部门「总公司」、admin 部门归属及业务表数据权限字段回填。")
 
 
-def main() -> None:
+async def main() -> None:
     ensure_tables()
     ensure_user_gender_column()
     ensure_biz_news_article_cover_image_column()
@@ -765,32 +768,30 @@ def main() -> None:
     ensure_biz_news_article_data_perm_columns()
     ensure_biz_fragment_category_data_perm_columns()
     ensure_biz_fragment_content_data_perm_columns()
-    session = SessionLocal()
-    try:
-        seed(session)
-        ensure_user_manage_menu(session)
-        ensure_role_manage_menu(session)
-        ensure_menu_manage_menu(session)
-        ensure_system_log_menu(session)
-        ensure_dict_manage_menu(session)
-        ensure_sys_dict_init(session)
-        ensure_news_center_menu(session)
-        ensure_news_category_init(session)
-        ensure_news_article_menu(session)
-        ensure_news_article_init(session)
-        ensure_business_manage_menu(session)
-        ensure_fragment_manage_menu(session)
-        ensure_fragment_category_seed(session)
-        ensure_dict_news_button_menus(session)
-        ensure_role_button_menus(session)
-        ensure_fragment_button_menus(session)
-        ensure_root_department_and_backfill(session)
-    except Exception:
-        session.rollback()
-        raise
-    finally:
-        session.close()
+    async with AsyncSessionLocal() as session:
+        try:
+            await session.run_sync(seed)
+            await session.run_sync(ensure_user_manage_menu)
+            await session.run_sync(ensure_role_manage_menu)
+            await session.run_sync(ensure_menu_manage_menu)
+            await session.run_sync(ensure_system_log_menu)
+            await session.run_sync(ensure_dict_manage_menu)
+            await session.run_sync(ensure_sys_dict_init)
+            await session.run_sync(ensure_news_center_menu)
+            await session.run_sync(ensure_news_category_init)
+            await session.run_sync(ensure_news_article_menu)
+            await session.run_sync(ensure_news_article_init)
+            await session.run_sync(ensure_business_manage_menu)
+            await session.run_sync(ensure_fragment_manage_menu)
+            await session.run_sync(ensure_fragment_category_seed)
+            await session.run_sync(ensure_dict_news_button_menus)
+            await session.run_sync(ensure_role_button_menus)
+            await session.run_sync(ensure_fragment_button_menus)
+            await session.run_sync(ensure_root_department_and_backfill)
+        except Exception:
+            await session.rollback()
+            raise
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

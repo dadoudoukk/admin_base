@@ -1,13 +1,12 @@
-import asyncio
 import logging
-import time
 from typing import Optional
 
 from fastapi import Request
+from sqlalchemy import select
 from starlette.responses import Response
 
 from api.deps import decode_access_token
-from core.database import SessionLocal
+from core.database import AsyncSessionLocal
 from models import SysOperLog, SysUser
 
 logger = logging.getLogger(__name__)
@@ -22,7 +21,7 @@ def client_ip(request: Request) -> str:
     return ""
 
 
-def save_oper_log_sync(
+async def save_oper_log_async(
     access_token: Optional[str],
     request_method: str,
     request_url: str,
@@ -32,34 +31,38 @@ def save_oper_log_sync(
     error_msg: Optional[str],
     request_param: Optional[str],
 ) -> None:
-    """仅在函数内创建 Session，禁止复用外部传入的 Session（线程安全）。"""
-    db = SessionLocal()
-    try:
-        user_name: Optional[str] = None
-        if access_token:
-            claims = decode_access_token(access_token)
-            if claims and claims.get("user_id") is not None:
-                u = db.query(SysUser).filter(SysUser.id == int(claims["user_id"]), SysUser.is_delete == 0).first()
-                if u:
-                    user_name = u.username
-        db.add(
-            SysOperLog(
-                user_name=user_name,
-                request_method=request_method,
-                request_url=request_url,
-                request_ip=request_ip,
-                execute_time=execute_time,
-                status=status,
-                error_msg=error_msg,
-                request_param=request_param,
+    """后台任务内创建独立 AsyncSession，禁止复用请求会话。"""
+    if AsyncSessionLocal is None:
+        return
+    async with AsyncSessionLocal() as db:
+        try:
+            user_name: Optional[str] = None
+            if access_token:
+                claims = decode_access_token(access_token)
+                if claims and claims.get("user_id") is not None:
+                    u = (
+                        await db.scalars(
+                            select(SysUser).where(SysUser.id == int(claims["user_id"]), SysUser.is_delete == 0)
+                        )
+                    ).first()
+                    if u:
+                        user_name = u.username
+            db.add(
+                SysOperLog(
+                    user_name=user_name,
+                    request_method=request_method,
+                    request_url=request_url,
+                    request_ip=request_ip,
+                    execute_time=execute_time,
+                    status=status,
+                    error_msg=error_msg,
+                    request_param=request_param,
+                )
             )
-        )
-        db.commit()
-    except Exception:
-        logger.exception("写入操作日志失败")
-        db.rollback()
-    finally:
-        db.close()
+            await db.commit()
+        except Exception:
+            logger.exception("写入操作日志失败")
+            await db.rollback()
 
 
 def resolve_oper_log_status(response: Optional[Response], err: Optional[Exception]) -> tuple[int, Optional[str]]:
@@ -89,8 +92,8 @@ async def flush_oper_log_background(
     error_msg: Optional[str],
     request_param: Optional[str],
 ) -> None:
-    def _run() -> None:
-        save_oper_log_sync(
+    try:
+        await save_oper_log_async(
             access_token,
             request_method,
             request_url,
@@ -100,8 +103,5 @@ async def flush_oper_log_background(
             error_msg,
             request_param,
         )
-
-    try:
-        await asyncio.to_thread(_run)
     except Exception:
         logger.exception("异步写入操作日志失败")

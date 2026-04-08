@@ -2,10 +2,12 @@ from datetime import datetime
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, Header
-from sqlalchemy.orm import Session
+from sqlalchemy import delete, func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from api.deps import (
-    get_db,
+    get_async_db,
     invalidate_all_user_perms_caches,
     make_response,
     require_permission,
@@ -25,26 +27,30 @@ from schemas.role import (
 router = APIRouter(prefix="/role", tags=["角色管理"])
 
 
-def _sync_role_custom_depts(db: Session, role_id: int, data_scope: int, custom_dept_ids: list[int]) -> None:
+async def _sync_role_custom_depts(db: AsyncSession, role_id: int, data_scope: int, custom_dept_ids: list[int]) -> None:
     """
     同步角色-部门关联：
     - data_scope != 5：清空关联
     - data_scope == 5：按传入列表重建关联（去重 + 仅保留存在部门）
     """
-    db.query(SysRoleDept).filter(SysRoleDept.role_id == role_id).delete(synchronize_session=False)
+    await db.execute(delete(SysRoleDept).where(SysRoleDept.role_id == role_id))
     if int(data_scope) != 5:
         return
     unique_ids = list(dict.fromkeys(int(x) for x in (custom_dept_ids or [])))
     if not unique_ids:
         return
-    dept_ids = db.query(SysDept.id).filter(SysDept.id.in_(unique_ids), SysDept.is_delete == 0).all()
-    valid_ids = [int(x[0]) for x in dept_ids]
+    dept_ids = (await db.scalars(select(SysDept.id).where(SysDept.id.in_(unique_ids), SysDept.is_delete == 0))).all()
+    valid_ids = [int(x) for x in dept_ids]
     for did in valid_ids:
         db.add(SysRoleDept(role_id=role_id, dept_id=did))
 
 
-def _build_dept_tree(db: Session) -> list[dict]:
-    rows = db.query(SysDept).filter(SysDept.is_delete == 0, SysDept.status == 1).order_by(SysDept.sort.asc(), SysDept.id.asc()).all()
+async def _build_dept_tree(db: AsyncSession) -> list[dict]:
+    rows = (
+        await db.scalars(
+            select(SysDept).where(SysDept.is_delete == 0, SysDept.status == 1).order_by(SysDept.sort.asc(), SysDept.id.asc())
+        )
+    ).all()
     node_map: dict[int, dict] = {
         int(d.id): {"id": int(d.id), "label": d.name, "children": []} for d in rows
     }
@@ -60,30 +66,27 @@ def _build_dept_tree(db: Session) -> list[dict]:
 
 
 @router.post("/list")
-def role_list_page(
+async def role_list_page(
     body: RoleListBody,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
 ) -> Dict[str, Any]:
-    ctx = require_user(x_access_token)
+    ctx = await require_user(x_access_token)
     if not ctx:
         return make_response(401, data={}, msg="登录过期，请重新登录")
 
-    q = db.query(SysRole).filter(SysRole.is_delete == 0)
+    q = select(SysRole).where(SysRole.is_delete == 0).options(selectinload(SysRole.role_dept_associations))
     if body.roleName and body.roleName.strip():
-        q = q.filter(SysRole.name.like(f"%{body.roleName.strip()}%"))
+        q = q.where(SysRole.name.like(f"%{body.roleName.strip()}%"))
     if body.roleCode and body.roleCode.strip():
-        q = q.filter(SysRole.code.like(f"%{body.roleCode.strip()}%"))
+        q = q.where(SysRole.code.like(f"%{body.roleCode.strip()}%"))
 
-    total = q.count()
+    total = len((await db.scalars(q)).all())
     page_num = body.pageNum
     page_size = body.pageSize
     rows = (
-        q.order_by(SysRole.id.desc())
-        .offset((page_num - 1) * page_size)
-        .limit(page_size)
-        .all()
-    )
+        await db.scalars(q.order_by(SysRole.id.desc()).offset((page_num - 1) * page_size).limit(page_size))
+    ).all()
     data = {
         "list": [role_row(r) for r in rows],
         "pageNum": page_num,
@@ -94,33 +97,37 @@ def role_list_page(
 
 
 @router.get("/all")
-def role_all(
-    db: Session = Depends(get_db),
+async def role_all(
+    db: AsyncSession = Depends(get_async_db),
     x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
 ) -> Dict[str, Any]:
-    ctx = require_user(x_access_token)
+    ctx = await require_user(x_access_token)
     if not ctx:
         return make_response(401, data={}, msg="登录过期，请重新登录")
-    rows = db.query(SysRole).filter(SysRole.is_active == True, SysRole.is_delete == 0).order_by(SysRole.id.asc()).all()  # noqa: E712
+    rows = (
+        await db.scalars(
+            select(SysRole).where(SysRole.is_active == True, SysRole.is_delete == 0).order_by(SysRole.id.asc())  # noqa: E712
+        )
+    ).all()
     data = [{"id": r.id, "roleName": r.name} for r in rows]
     return make_response(200, data=data, msg="success")
 
 
 @router.post("/add", dependencies=[Depends(require_permission("role:add"))])
-def role_add(
+async def role_add(
     body: RoleAddBody,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
 ) -> Dict[str, Any]:
-    ctx = require_user(x_access_token)
+    ctx = await require_user(x_access_token)
     if not ctx:
         return make_response(401, data={}, msg="登录过期，请重新登录")
 
     code = body.roleCode.strip()
     name = body.roleName.strip()
-    if db.query(SysRole).filter(SysRole.code == code, SysRole.is_delete == 0).first():
+    if (await db.scalars(select(SysRole).where(SysRole.code == code, SysRole.is_delete == 0))).first():
         return make_response(500, data={}, msg="角色标识已存在")
-    if db.query(SysRole).filter(SysRole.name == name, SysRole.is_delete == 0).first():
+    if (await db.scalars(select(SysRole).where(SysRole.name == name, SysRole.is_delete == 0))).first():
         return make_response(500, data={}, msg="角色名称已存在")
 
     try:
@@ -132,28 +139,32 @@ def role_add(
             is_active=True,
         )
         db.add(r)
-        db.flush()
-        _sync_role_custom_depts(db, r.id, int(body.data_scope), body.custom_dept_ids)
-        db.commit()
+        await db.flush()
+        await _sync_role_custom_depts(db, r.id, int(body.data_scope), body.custom_dept_ids)
+        await db.commit()
     except Exception:
-        db.rollback()
+        await db.rollback()
         raise
     invalidate_all_user_perms_caches()
     return make_response(200, data={}, msg="新增成功")
 
 
 @router.post("/edit", dependencies=[Depends(require_permission("role:edit"))])
-def role_edit(
+async def role_edit(
     body: RoleEditBody,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
 ) -> Dict[str, Any]:
-    ctx = require_user(x_access_token)
+    ctx = await require_user(x_access_token)
     if not ctx:
         return make_response(401, data={}, msg="登录过期，请重新登录")
 
     rid = int(body.id) if not isinstance(body.id, int) else body.id
-    r = db.query(SysRole).filter(SysRole.id == rid, SysRole.is_delete == 0).first()
+    r = (
+        await db.scalars(
+            select(SysRole).where(SysRole.id == rid, SysRole.is_delete == 0).options(selectinload(SysRole.role_dept_associations))
+        )
+    ).first()
     if not r:
         return make_response(500, data={}, msg="角色不存在")
 
@@ -166,11 +177,11 @@ def role_edit(
         return make_response(500, data={}, msg="不能修改超级管理员角色标识")
 
     if name != r.name:
-        if db.query(SysRole).filter(SysRole.name == name, SysRole.id != rid, SysRole.is_delete == 0).first():
+        if (await db.scalars(select(SysRole).where(SysRole.name == name, SysRole.id != rid, SysRole.is_delete == 0))).first():
             return make_response(500, data={}, msg="角色名称已存在")
         r.name = name
     if code != r.code:
-        if db.query(SysRole).filter(SysRole.code == code, SysRole.id != rid, SysRole.is_delete == 0).first():
+        if (await db.scalars(select(SysRole).where(SysRole.code == code, SysRole.id != rid, SysRole.is_delete == 0))).first():
             return make_response(500, data={}, msg="角色标识已存在")
         r.code = code
 
@@ -181,34 +192,36 @@ def role_edit(
         if body.remark is not None:
             r.description = body.remark
         r.data_scope = int(body.data_scope)
-        _sync_role_custom_depts(db, rid, int(body.data_scope), body.custom_dept_ids)
-        db.commit()
+        await _sync_role_custom_depts(db, rid, int(body.data_scope), body.custom_dept_ids)
+        await db.commit()
     except Exception:
-        db.rollback()
+        await db.rollback()
         raise
     invalidate_all_user_perms_caches()
     return make_response(200, data={}, msg="编辑成功")
 
 
 @router.post("/delete", dependencies=[Depends(require_permission("role:delete"))])
-def role_delete(
+async def role_delete(
     body: RoleDeleteBody,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
 ) -> Dict[str, Any]:
-    ctx = require_user(x_access_token)
+    ctx = await require_user(x_access_token)
     if not ctx:
         return make_response(401, data={}, msg="登录过期，请重新登录")
 
     deleted = 0
     for raw in body.id:
         rid = int(raw) if not isinstance(raw, int) else raw
-        role = db.query(SysRole).filter(SysRole.id == rid, SysRole.is_delete == 0).first()
+        role = (await db.scalars(select(SysRole).where(SysRole.id == rid, SysRole.is_delete == 0))).first()
         if not role:
             continue
         if role.code == "admin":
             return make_response(500, data={}, msg="不能删除超级管理员角色")
-        bind_count = db.query(SysUserRole).filter(SysUserRole.role_id == rid).count()
+        bind_count = (
+            await db.scalar(select(func.count()).select_from(SysUserRole).where(SysUserRole.role_id == rid))
+        ) or 0
         if bind_count > 0:
             return make_response(500, data={}, msg=f"角色【{role.name}】下仍有关联用户，不能删除")
         role.is_delete = 1
@@ -218,23 +231,27 @@ def role_delete(
     if not deleted:
         return make_response(500, data={}, msg="角色不存在或已删除")
 
-    db.commit()
+    await db.commit()
     invalidate_all_user_perms_caches()
     return make_response(200, data={}, msg="删除成功")
 
 
 @router.post("/getMenuIds", dependencies=[Depends(require_permission("role:auth"))])
-def role_get_menu_ids(
+async def role_get_menu_ids(
     body: RoleMenuIdsBody,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
 ) -> Dict[str, Any]:
-    ctx = require_user(x_access_token)
+    ctx = await require_user(x_access_token)
     if not ctx:
         return make_response(401, data=[], msg="登录过期，请重新登录")
 
     rid = int(body.roleId) if not isinstance(body.roleId, int) else body.roleId
-    role = db.query(SysRole).filter(SysRole.id == rid, SysRole.is_delete == 0).first()
+    role = (
+        await db.scalars(
+            select(SysRole).where(SysRole.id == rid, SysRole.is_delete == 0).options(selectinload(SysRole.menus))
+        )
+    ).first()
     if not role:
         return make_response(500, data=[], msg="角色不存在")
 
@@ -243,40 +260,40 @@ def role_get_menu_ids(
 
 
 @router.get("/deptTree")
-def role_dept_tree(
-    db: Session = Depends(get_db),
+async def role_dept_tree(
+    db: AsyncSession = Depends(get_async_db),
     x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
 ) -> Dict[str, Any]:
-    ctx = require_user(x_access_token)
+    ctx = await require_user(x_access_token)
     if not ctx:
         return make_response(401, data=[], msg="登录过期，请重新登录")
-    return make_response(200, data=_build_dept_tree(db), msg="success")
+    return make_response(200, data=await _build_dept_tree(db), msg="success")
 
 
 @router.post("/assignMenu", dependencies=[Depends(require_permission("role:auth"))])
-def role_assign_menu(
+async def role_assign_menu(
     body: RoleAssignMenuBody,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
 ) -> Dict[str, Any]:
-    ctx = require_user(x_access_token)
+    ctx = await require_user(x_access_token)
     if not ctx:
         return make_response(401, data={}, msg="登录过期，请重新登录")
 
     rid = int(body.roleId) if not isinstance(body.roleId, int) else body.roleId
-    role = db.query(SysRole).filter(SysRole.id == rid, SysRole.is_delete == 0).first()
+    role = (await db.scalars(select(SysRole).where(SysRole.id == rid, SysRole.is_delete == 0))).first()
     if not role:
         return make_response(500, data={}, msg="角色不存在")
 
     unique_ids = list(dict.fromkeys(body.menuIds))
 
     try:
-        db.query(SysRoleMenu).filter(SysRoleMenu.role_id == rid).delete(synchronize_session=False)
+        await db.execute(delete(SysRoleMenu).where(SysRoleMenu.role_id == rid))
         for mid in unique_ids:
             db.add(SysRoleMenu(role_id=rid, menu_id=int(mid)))
-        db.commit()
+        await db.commit()
     except Exception:
-        db.rollback()
+        await db.rollback()
         raise
 
     invalidate_all_user_perms_caches()

@@ -3,13 +3,12 @@ from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, Header
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from api.deps import get_db, make_response, require_permission, require_user, require_user_with_data_perm
+from api.deps import get_async_db, make_response, require_permission, require_user, require_user_with_data_perm
 from api.helpers import compute_home_statistics, news_article_row, news_category_row
 from core.context import ctx_dept_id, ctx_user_id
 from core.data_perm import apply_data_scope
-from core.redis_client import cache_get_or_set_json
 from models import BizNewsArticle, BizNewsCategory
 from schemas.business import (
     NewsArticleAddBody,
@@ -28,28 +27,25 @@ router = APIRouter(prefix="/biz", tags=["业务-新闻"])
 
 
 @router.get("/home/statistics")
-def biz_home_statistics(
-    db: Session = Depends(get_db),
+async def biz_home_statistics(
+    db: AsyncSession = Depends(get_async_db),
     x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
 ) -> Dict[str, Any]:
-    ctx = require_user(x_access_token)
+    ctx = await require_user(x_access_token)
     if not ctx:
         return make_response(401, data={}, msg="登录过期，请重新登录")
 
-    def load() -> Dict[str, Any]:
-        return compute_home_statistics(db)
-
-    data = cache_get_or_set_json("home:stats", 300, load)
+    data = await compute_home_statistics(db)
     return make_response(200, data=data, msg="success")
 
 
 @router.post("/newsCategory/list")
-def news_category_list(
+async def news_category_list(
     body: NewsCategoryListBody,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
 ) -> Dict[str, Any]:
-    ctx = require_user_with_data_perm(db, x_access_token)
+    ctx = await require_user_with_data_perm(db, x_access_token)
     if not ctx:
         return make_response(401, data={}, msg="登录过期，请重新登录")
 
@@ -58,12 +54,12 @@ def news_category_list(
         stmt = stmt.where(BizNewsCategory.category_name.like(f"%{body.categoryName.strip()}%"))
     stmt = apply_data_scope(stmt, BizNewsCategory)
 
-    count_stmt = select(func.count()).select_from(stmt.subquery())
-    total = int(db.scalar(count_stmt) or 0)
+    count_stmt = select(func.count()).select_from(BizNewsCategory).where(*stmt._where_criteria)
+    total = int((await db.scalar(count_stmt)) or 0)
 
     stmt = stmt.order_by(BizNewsCategory.sort.asc(), BizNewsCategory.id.asc())
     stmt = stmt.offset((body.pageNum - 1) * body.pageSize).limit(body.pageSize)
-    rows = list(db.scalars(stmt).all())
+    rows = list((await db.scalars(stmt)).all())
     return make_response(
         200,
         data={
@@ -77,12 +73,12 @@ def news_category_list(
 
 
 @router.post("/newsCategory/add", dependencies=[Depends(require_permission("newsCategory:add"))])
-def news_category_add(
+async def news_category_add(
     body: NewsCategoryAddBody,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
 ) -> Dict[str, Any]:
-    ctx = require_user_with_data_perm(db, x_access_token)
+    ctx = await require_user_with_data_perm(db, x_access_token)
     if not ctx:
         return make_response(401, data={}, msg="登录过期，请重新登录")
 
@@ -96,7 +92,7 @@ def news_category_add(
         .where(BizNewsCategory.category_name == category_name, BizNewsCategory.is_delete == 0)
         .limit(1)
     )
-    if db.scalars(dup_stmt).first() is not None:
+    if (await db.scalars(dup_stmt)).first() is not None:
         return make_response(500, data={}, msg="分类名称已存在")
 
     db.add(
@@ -109,17 +105,17 @@ def news_category_add(
             created_by=ctx_user_id.get(),
         )
     )
-    db.commit()
+    await db.commit()
     return make_response(200, data={}, msg="新增成功")
 
 
 @router.post("/newsCategory/edit", dependencies=[Depends(require_permission("newsCategory:edit"))])
-def news_category_edit(
+async def news_category_edit(
     body: NewsCategoryEditBody,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
 ) -> Dict[str, Any]:
-    ctx = require_user_with_data_perm(db, x_access_token)
+    ctx = await require_user_with_data_perm(db, x_access_token)
     if not ctx:
         return make_response(401, data={}, msg="登录过期，请重新登录")
 
@@ -128,11 +124,11 @@ def news_category_edit(
     cid = int(body.id) if not isinstance(body.id, int) else body.id
     stmt = select(BizNewsCategory).where(BizNewsCategory.id == cid, BizNewsCategory.is_delete == 0)
     stmt = apply_data_scope(stmt, BizNewsCategory)
-    row = db.scalars(stmt).first()
+    row = (await db.scalars(stmt)).first()
     if not row:
-        exists = db.scalars(
+        exists = (await db.scalars(
             select(BizNewsCategory.id).where(BizNewsCategory.id == cid, BizNewsCategory.is_delete == 0).limit(1)
-        ).first()
+        )).first()
         if exists is not None:
             return make_response(403, data={}, msg="无权限访问该分类")
         return make_response(500, data={}, msg="分类不存在")
@@ -145,7 +141,7 @@ def news_category_edit(
         BizNewsCategory.id != cid,
         BizNewsCategory.is_delete == 0,
     )
-    other = db.scalars(other_stmt).first()
+    other = (await db.scalars(other_stmt)).first()
     if other:
         return make_response(500, data={}, msg="分类名称已存在")
 
@@ -153,17 +149,17 @@ def news_category_edit(
     row.sort = body.sort
     row.status = body.status
     row.remark = body.remark
-    db.commit()
+    await db.commit()
     return make_response(200, data={}, msg="编辑成功")
 
 
 @router.post("/newsCategory/delete", dependencies=[Depends(require_permission("newsCategory:delete"))])
-def news_category_delete(
+async def news_category_delete(
     body: NewsCategoryDeleteBody,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
 ) -> Dict[str, Any]:
-    ctx = require_user_with_data_perm(db, x_access_token)
+    ctx = await require_user_with_data_perm(db, x_access_token)
     if not ctx:
         return make_response(401, data={}, msg="登录过期，请重新登录")
 
@@ -172,7 +168,7 @@ def news_category_delete(
         cid = int(raw) if not isinstance(raw, int) else raw
         stmt = select(BizNewsCategory).where(BizNewsCategory.id == cid, BizNewsCategory.is_delete == 0)
         stmt = apply_data_scope(stmt, BizNewsCategory)
-        row = db.scalars(stmt).first()
+        row = (await db.scalars(stmt)).first()
         if row:
             row.is_delete = 1
             row.delete_time = datetime.now()
@@ -182,21 +178,21 @@ def news_category_delete(
             BizNewsCategory.id.in_([int(x) if not isinstance(x, int) else x for x in body.id]),
             BizNewsCategory.is_delete == 0,
         ).limit(1)
-        if db.scalars(exists_stmt).first() is not None:
+        if (await db.scalars(exists_stmt)).first() is not None:
             return make_response(403, data={}, msg="无权限删除所选分类")
         return make_response(500, data={}, msg="分类不存在或已删除")
 
-    db.commit()
+    await db.commit()
     return make_response(200, data={}, msg="删除成功")
 
 
 @router.post("/newsCategory/changeStatus", dependencies=[Depends(require_permission("newsCategory:edit"))])
-def news_category_change_status(
+async def news_category_change_status(
     body: NewsCategoryChangeStatusBody,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
 ) -> Dict[str, Any]:
-    ctx = require_user_with_data_perm(db, x_access_token)
+    ctx = await require_user_with_data_perm(db, x_access_token)
     if not ctx:
         return make_response(401, data={}, msg="登录过期，请重新登录")
 
@@ -205,44 +201,44 @@ def news_category_change_status(
     cid = int(body.id) if not isinstance(body.id, int) else body.id
     stmt = select(BizNewsCategory).where(BizNewsCategory.id == cid, BizNewsCategory.is_delete == 0)
     stmt = apply_data_scope(stmt, BizNewsCategory)
-    row = db.scalars(stmt).first()
+    row = (await db.scalars(stmt)).first()
     if not row:
-        exists = db.scalars(
+        exists = (await db.scalars(
             select(BizNewsCategory.id).where(BizNewsCategory.id == cid, BizNewsCategory.is_delete == 0).limit(1)
-        ).first()
+        )).first()
         if exists is not None:
             return make_response(403, data={}, msg="无权限访问该分类")
         return make_response(500, data={}, msg="分类不存在")
 
     row.status = body.status
-    db.commit()
+    await db.commit()
     return make_response(200, data={}, msg="状态修改成功")
 
 
 @router.get("/newsCategory/all")
-def news_category_all(
-    db: Session = Depends(get_db),
+async def news_category_all(
+    db: AsyncSession = Depends(get_async_db),
     x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
 ) -> Dict[str, Any]:
-    ctx = require_user_with_data_perm(db, x_access_token)
+    ctx = await require_user_with_data_perm(db, x_access_token)
     if not ctx:
         return make_response(401, data=[], msg="登录过期，请重新登录")
 
     stmt = select(BizNewsCategory).where(BizNewsCategory.status == 1, BizNewsCategory.is_delete == 0)
     stmt = apply_data_scope(stmt, BizNewsCategory)
     stmt = stmt.order_by(BizNewsCategory.sort.asc(), BizNewsCategory.id.asc())
-    rows = list(db.scalars(stmt).all())
+    rows = list((await db.scalars(stmt)).all())
     data = [{"id": str(r.id), "categoryName": r.category_name} for r in rows]
     return make_response(200, data=data, msg="success")
 
 
 @router.post("/newsArticle/list")
-def news_article_list(
+async def news_article_list(
     body: NewsArticleListBody,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
 ) -> Dict[str, Any]:
-    ctx = require_user_with_data_perm(db, x_access_token)
+    ctx = await require_user_with_data_perm(db, x_access_token)
     if not ctx:
         return make_response(401, data={}, msg="登录过期，请重新登录")
 
@@ -254,16 +250,16 @@ def news_article_list(
         stmt = stmt.where(BizNewsArticle.category_id == cid)
     stmt = apply_data_scope(stmt, BizNewsArticle)
 
-    count_stmt = select(func.count()).select_from(stmt.subquery())
-    total = int(db.scalar(count_stmt) or 0)
+    count_stmt = select(func.count()).select_from(BizNewsArticle).where(*stmt._where_criteria)
+    total = int((await db.scalar(count_stmt)) or 0)
 
     stmt = stmt.order_by(BizNewsArticle.is_top.desc(), BizNewsArticle.id.desc())
     stmt = stmt.offset((body.pageNum - 1) * body.pageSize).limit(body.pageSize)
-    rows = list(db.scalars(stmt).all())
+    rows = list((await db.scalars(stmt)).all())
 
     cat_stmt = select(BizNewsCategory).where(BizNewsCategory.is_delete == 0)
     cat_stmt = apply_data_scope(cat_stmt, BizNewsCategory)
-    category_map = {str(c.id): c.category_name for c in db.scalars(cat_stmt).all()}
+    category_map = {str(c.id): c.category_name for c in (await db.scalars(cat_stmt)).all()}
     data_list = [news_article_row(r, category_map.get(str(r.category_id), "")) for r in rows]
     return make_response(
         200,
@@ -278,12 +274,12 @@ def news_article_list(
 
 
 @router.post("/newsArticle/add", dependencies=[Depends(require_permission("newsArticle:add"))])
-def news_article_add(
+async def news_article_add(
     body: NewsArticleAddBody,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
 ) -> Dict[str, Any]:
-    ctx = require_user_with_data_perm(db, x_access_token)
+    ctx = await require_user_with_data_perm(db, x_access_token)
     if not ctx:
         return make_response(401, data={}, msg="登录过期，请重新登录")
 
@@ -292,7 +288,7 @@ def news_article_add(
     cid = int(body.categoryId) if not isinstance(body.categoryId, int) else body.categoryId
     cat_stmt = select(BizNewsCategory).where(BizNewsCategory.id == cid, BizNewsCategory.is_delete == 0)
     cat_stmt = apply_data_scope(cat_stmt, BizNewsCategory)
-    if not db.scalars(cat_stmt).first():
+    if not (await db.scalars(cat_stmt)).first():
         return make_response(500, data={}, msg="新闻分类不存在")
 
     title = body.title.strip()
@@ -314,17 +310,17 @@ def news_article_add(
             created_by=ctx_user_id.get(),
         )
     )
-    db.commit()
+    await db.commit()
     return make_response(200, data={}, msg="新增成功")
 
 
 @router.post("/newsArticle/edit", dependencies=[Depends(require_permission("newsArticle:edit"))])
-def news_article_edit(
+async def news_article_edit(
     body: NewsArticleEditBody,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
 ) -> Dict[str, Any]:
-    ctx = require_user_with_data_perm(db, x_access_token)
+    ctx = await require_user_with_data_perm(db, x_access_token)
     if not ctx:
         return make_response(401, data={}, msg="登录过期，请重新登录")
 
@@ -333,11 +329,11 @@ def news_article_edit(
     aid = int(body.id) if not isinstance(body.id, int) else body.id
     row_stmt = select(BizNewsArticle).where(BizNewsArticle.id == aid, BizNewsArticle.is_delete == 0)
     row_stmt = apply_data_scope(row_stmt, BizNewsArticle)
-    row = db.scalars(row_stmt).first()
+    row = (await db.scalars(row_stmt)).first()
     if not row:
-        exists = db.scalars(
+        exists = (await db.scalars(
             select(BizNewsArticle.id).where(BizNewsArticle.id == aid, BizNewsArticle.is_delete == 0).limit(1)
-        ).first()
+        )).first()
         if exists is not None:
             return make_response(403, data={}, msg="无权限访问该文章")
         return make_response(500, data={}, msg="文章不存在")
@@ -345,7 +341,7 @@ def news_article_edit(
     cid = int(body.categoryId) if not isinstance(body.categoryId, int) else body.categoryId
     cat_stmt = select(BizNewsCategory).where(BizNewsCategory.id == cid, BizNewsCategory.is_delete == 0)
     cat_stmt = apply_data_scope(cat_stmt, BizNewsCategory)
-    if not db.scalars(cat_stmt).first():
+    if not (await db.scalars(cat_stmt)).first():
         return make_response(500, data={}, msg="新闻分类不存在")
 
     title = body.title.strip()
@@ -361,17 +357,17 @@ def news_article_edit(
     row.cover_image_url = (body.imageUrl or "").strip() or None
     row.is_top = body.isTop
     row.status = body.status
-    db.commit()
+    await db.commit()
     return make_response(200, data={}, msg="编辑成功")
 
 
 @router.post("/newsArticle/delete", dependencies=[Depends(require_permission("newsArticle:delete"))])
-def news_article_delete(
+async def news_article_delete(
     body: NewsArticleDeleteBody,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
 ) -> Dict[str, Any]:
-    ctx = require_user_with_data_perm(db, x_access_token)
+    ctx = await require_user_with_data_perm(db, x_access_token)
     if not ctx:
         return make_response(401, data={}, msg="登录过期，请重新登录")
 
@@ -380,7 +376,7 @@ def news_article_delete(
         aid = int(raw) if not isinstance(raw, int) else raw
         stmt = select(BizNewsArticle).where(BizNewsArticle.id == aid, BizNewsArticle.is_delete == 0)
         stmt = apply_data_scope(stmt, BizNewsArticle)
-        row = db.scalars(stmt).first()
+        row = (await db.scalars(stmt)).first()
         if row:
             row.is_delete = 1
             row.delete_time = datetime.now()
@@ -390,21 +386,21 @@ def news_article_delete(
             BizNewsArticle.id.in_([int(x) if not isinstance(x, int) else x for x in body.id]),
             BizNewsArticle.is_delete == 0,
         ).limit(1)
-        if db.scalars(exists_stmt).first() is not None:
+        if (await db.scalars(exists_stmt)).first() is not None:
             return make_response(403, data={}, msg="无权限删除所选文章")
         return make_response(500, data={}, msg="文章不存在或已删除")
 
-    db.commit()
+    await db.commit()
     return make_response(200, data={}, msg="删除成功")
 
 
 @router.post("/newsArticle/changeStatus", dependencies=[Depends(require_permission("newsArticle:edit"))])
-def news_article_change_status(
+async def news_article_change_status(
     body: NewsArticleChangeStatusBody,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
 ) -> Dict[str, Any]:
-    ctx = require_user_with_data_perm(db, x_access_token)
+    ctx = await require_user_with_data_perm(db, x_access_token)
     if not ctx:
         return make_response(401, data={}, msg="登录过期，请重新登录")
 
@@ -413,15 +409,15 @@ def news_article_change_status(
     aid = int(body.id) if not isinstance(body.id, int) else body.id
     stmt = select(BizNewsArticle).where(BizNewsArticle.id == aid, BizNewsArticle.is_delete == 0)
     stmt = apply_data_scope(stmt, BizNewsArticle)
-    row = db.scalars(stmt).first()
+    row = (await db.scalars(stmt)).first()
     if not row:
-        exists = db.scalars(
+        exists = (await db.scalars(
             select(BizNewsArticle.id).where(BizNewsArticle.id == aid, BizNewsArticle.is_delete == 0).limit(1)
-        ).first()
+        )).first()
         if exists is not None:
             return make_response(403, data={}, msg="无权限访问该文章")
         return make_response(500, data={}, msg="文章不存在")
 
     row.status = body.status
-    db.commit()
+    await db.commit()
     return make_response(200, data={}, msg="状态修改成功")

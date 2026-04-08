@@ -2,7 +2,8 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Set
 
 import pandas as pd
-from sqlalchemy.orm import Session
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import (
     BizFragmentCategory,
@@ -148,54 +149,6 @@ def build_menu_tree_all(rows: List[SysMenu]) -> List[dict]:
     return walk(None)
 
 
-def fetch_menu_rows_for_user(db: Session, ctx: dict) -> List[SysMenu]:
-    """超级管理员 / admin 角色：查全部有效菜单；否则按角色关联菜单并补全父级链。"""
-    base_q = (
-        db.query(SysMenu)
-        .filter(SysMenu.is_delete == 0)
-        .filter(SysMenu.status == True)  # noqa: E712
-        .filter(SysMenu.menu_type.in_(["CATALOG", "MENU"]))
-    )
-
-    if ctx.get("is_superuser") or "admin" in (ctx.get("roles") or []) or ctx.get("username") == "admin":
-        return base_q.order_by(SysMenu.sort.asc(), SysMenu.id.asc()).all()
-
-    uid = ctx["user_id"]
-    user = db.query(SysUser).filter(SysUser.id == uid, SysUser.is_delete == 0).first()
-    if not user:
-        return []
-
-    all_menus = base_q.all()
-    id_to_menu = {m.id: m for m in all_menus}
-
-    seed_ids: Set[int] = set()
-    for role in user.roles:
-        for m in role.menus:
-            if m.status and m.menu_type in ("CATALOG", "MENU"):
-                seed_ids.add(m.id)
-
-    expanded: Set[int] = set()
-
-    def add_with_parents(mid: int) -> None:
-        if mid in expanded or mid not in id_to_menu:
-            return
-        obj = id_to_menu[mid]
-        expanded.add(mid)
-        if obj.parent_id:
-            add_with_parents(obj.parent_id)
-
-    for sid in list(seed_ids):
-        add_with_parents(sid)
-
-    rows = [id_to_menu[i] for i in expanded]
-    rows.sort(key=lambda m: (m.sort, m.id))
-    return rows
-
-
-def auth_button_list_static() -> Dict[str, List[str]]:
-    return {}
-
-
 def dict_data_row(d: SysDictData) -> Dict[str, Any]:
     created = d.created_at.strftime("%Y-%m-%d %H:%M:%S") if d.created_at else ""
     updated = d.updated_at.strftime("%Y-%m-%d %H:%M:%S") if d.updated_at else ""
@@ -334,26 +287,28 @@ def parse_datetime_text(raw: Optional[str]) -> Optional[datetime]:
     return None
 
 
-def build_sys_log_export_query(
-    db: Session,
+async def build_sys_log_export_query(
+    db: AsyncSession,
     user_name: Optional[str],
     request_method: Optional[str],
     start_time: Optional[str],
     end_time: Optional[str],
 ):
-    q = db.query(SysOperLog).filter(SysOperLog.is_delete == 0)
+    q = select(SysOperLog).where(SysOperLog.is_delete == 0)
     if user_name and user_name.strip():
-        q = q.filter(SysOperLog.user_name.like(f"%{user_name.strip()}%"))
+        q = q.where(SysOperLog.user_name.like(f"%{user_name.strip()}%"))
     if request_method and request_method.strip():
-        q = q.filter(SysOperLog.request_method == request_method.strip().upper())
+        q = q.where(SysOperLog.request_method == request_method.strip().upper())
 
     start_dt = parse_datetime_text(start_time)
     end_dt = parse_datetime_text(end_time)
     if start_dt is not None:
-        q = q.filter(SysOperLog.create_time >= start_dt)
+        q = q.where(SysOperLog.create_time >= start_dt)
     if end_dt is not None:
-        q = q.filter(SysOperLog.create_time <= end_dt)
-    return q.order_by(SysOperLog.create_time.desc())
+        q = q.where(SysOperLog.create_time <= end_dt)
+    return (
+        await db.scalars(q.order_by(SysOperLog.create_time.desc()))
+    ).all()
 
 
 def role_row(r: SysRole) -> Dict[str, Any]:
@@ -395,33 +350,19 @@ def gender_to_value(gender_label: str) -> str:
     return mapping.get(label, "3")
 
 
-def prepare_user_export_query(db: Session, username: Optional[str], gender: Optional[str]):
-    q = db.query(SysUser).filter(SysUser.is_delete == 0)
-    if username and username.strip():
-        q = q.filter(SysUser.username.like(f"%{username.strip()}%"))
-    if gender is not None and str(gender).strip() != "":
-        q = q.filter(SysUser.gender == str(gender).strip())
-    return q.order_by(SysUser.id.desc())
-
-
-def query_menu_tree_for_manage(db: Session) -> List[dict]:
-    """菜单管理：返回全部菜单（含停用）树。"""
-    rows = (
-        db.query(SysMenu)
-        .filter(SysMenu.is_delete == 0)
-        .order_by(SysMenu.sort.asc(), SysMenu.id.asc())
-        .all()
-    )
-    return build_menu_tree_all(rows)
-
-
-def compute_home_statistics(db: Session) -> Dict[str, Any]:
+async def compute_home_statistics(db: AsyncSession) -> Dict[str, Any]:
     return {
-        "userCount": db.query(SysUser).filter(SysUser.is_delete == 0).count(),
-        "roleCount": db.query(SysRole).filter(SysRole.is_delete == 0).count(),
-        "menuCount": db.query(SysMenu).filter(SysMenu.is_delete == 0).count(),
-        "newsArticleCount": db.query(BizNewsArticle).filter(BizNewsArticle.is_delete == 0).count(),
-        "newsCategoryCount": db.query(BizNewsCategory).filter(BizNewsCategory.is_delete == 0).count(),
-        "fragmentContentCount": db.query(BizFragmentContent).filter(BizFragmentContent.is_delete == 0).count(),
-        "operLogCount": db.query(SysOperLog).filter(SysOperLog.is_delete == 0).count(),
+        "userCount": int((await db.scalar(select(func.count()).select_from(SysUser).where(SysUser.is_delete == 0))) or 0),
+        "roleCount": int((await db.scalar(select(func.count()).select_from(SysRole).where(SysRole.is_delete == 0))) or 0),
+        "menuCount": int((await db.scalar(select(func.count()).select_from(SysMenu).where(SysMenu.is_delete == 0))) or 0),
+        "newsArticleCount": int(
+            (await db.scalar(select(func.count()).select_from(BizNewsArticle).where(BizNewsArticle.is_delete == 0))) or 0
+        ),
+        "newsCategoryCount": int(
+            (await db.scalar(select(func.count()).select_from(BizNewsCategory).where(BizNewsCategory.is_delete == 0))) or 0
+        ),
+        "fragmentContentCount": int(
+            (await db.scalar(select(func.count()).select_from(BizFragmentContent).where(BizFragmentContent.is_delete == 0))) or 0
+        ),
+        "operLogCount": int((await db.scalar(select(func.count()).select_from(SysOperLog).where(SysOperLog.is_delete == 0))) or 0),
     }

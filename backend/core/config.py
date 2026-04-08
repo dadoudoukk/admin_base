@@ -23,7 +23,7 @@ class Settings(BaseSettings):
 
     database_url: str = Field(
         ...,
-        description="SQLAlchemy 数据库 URL，如 mysql+pymysql://user:pass@host:3306/db?charset=utf8mb4",
+        description="SQLAlchemy 数据库 URL，如 mysql+aiomysql://user:pass@host:3306/db?charset=utf8mb4",
     )
     secret_key: str = Field(..., description="JWT 签名密钥")
     jwt_algorithm: str = Field(default="HS256", description="JWT 算法")

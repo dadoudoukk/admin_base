@@ -4,12 +4,15 @@ from typing import Any, Dict, List, Optional, Set
 from urllib.parse import quote
 
 import pandas as pd
+from fastapi.concurrency import run_in_threadpool
 from fastapi import APIRouter, Depends, File, Header, HTTPException, UploadFile
-from sqlalchemy.orm import Session
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 from starlette.responses import Response
 
 from api.deps import (
-    get_db,
+    get_async_db,
     get_user_perms_bundle,
     invalidate_user_perms_cache,
     make_response,
@@ -20,12 +23,10 @@ from api.deps import (
 from api.helpers import (
     gender_to_label,
     gender_to_value,
-    prepare_user_export_query,
     safe_cell_to_str,
     user_row,
 )
 from core.config import get_settings
-from core.database import SessionLocal
 from models import SysRole, SysUser
 from schemas.user import (
     UserAddBody,
@@ -42,17 +43,16 @@ _settings = get_settings()
 
 
 @router.get("/info")
-def user_info(x_access_token: Optional[str] = Header(default=None, alias="x-access-token")) -> Dict[str, Any]:
-    ctx = require_user(x_access_token)
+async def user_info(
+    x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
+    db: AsyncSession = Depends(get_async_db),
+) -> Dict[str, Any]:
+    ctx = await require_user(x_access_token)
     if not ctx:
         return make_response(401, data={}, msg="登录过期，请重新登录")
 
-    db = SessionLocal()
-    try:
-        bundle = get_user_perms_bundle(db, ctx)
-        buttons = bundle.get("codes") or []
-    finally:
-        db.close()
+    bundle = await db.run_sync(lambda s: get_user_perms_bundle(s, ctx))
+    buttons = bundle.get("codes") or []
 
     data = {
         "id": str(ctx["user_id"]),
@@ -66,16 +66,22 @@ def user_info(x_access_token: Optional[str] = Header(default=None, alias="x-acce
 
 
 @router.post("/changePassword")
-def user_change_password(
+async def user_change_password(
     body: UserChangePasswordBody,
     x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
 ) -> Dict[str, Any]:
-    ctx = require_user(x_access_token)
+    ctx = await require_user(x_access_token)
     if not ctx:
         return make_response(401, data={}, msg="登录过期，请重新登录")
 
-    user = db.query(SysUser).filter(SysUser.id == ctx["user_id"], SysUser.is_delete == 0).first()
+    user = (
+        await db.scalars(
+            select(SysUser)
+            .where(SysUser.id == ctx["user_id"], SysUser.is_delete == 0)
+            .options(selectinload(SysUser.roles), selectinload(SysUser.dept))
+        )
+    ).first()
     if not user:
         return make_response(401, data={}, msg="登录过期，请重新登录")
 
@@ -83,36 +89,39 @@ def user_change_password(
         return make_response(500, data={}, msg="原密码不正确")
 
     user.password = pwd_context.hash(body.newPassword)
-    db.commit()
+    await db.commit()
     return make_response(200, data={}, msg="密码修改成功，请重新登录")
 
 
 @router.post("/list")
-def user_list_page(
+async def user_list_page(
     body: UserListBody,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
 ) -> Dict[str, Any]:
-    ctx = require_user(x_access_token)
+    ctx = await require_user(x_access_token)
     if not ctx:
         return make_response(401, data={}, msg="登录过期，请重新登录")
 
-    q = db.query(SysUser).filter(SysUser.is_delete == 0)
+    q = select(SysUser).where(SysUser.is_delete == 0).options(selectinload(SysUser.roles), selectinload(SysUser.dept))
     if body.username and body.username.strip():
         kw = f"%{body.username.strip()}%"
-        q = q.filter(SysUser.username.like(kw))
+        q = q.where(SysUser.username.like(kw))
     if body.gender is not None and str(body.gender).strip() != "":
-        q = q.filter(SysUser.gender == str(body.gender).strip())
+        q = q.where(SysUser.gender == str(body.gender).strip())
 
-    total = q.count()
+    total = (
+        await db.scalar(select(func.count()).select_from(SysUser).where(*q._where_criteria))
+    ) or 0
     page_num = body.pageNum
     page_size = body.pageSize
     rows = (
-        q.order_by(SysUser.id.desc())
-        .offset((page_num - 1) * page_size)
-        .limit(page_size)
-        .all()
-    )
+        await db.scalars(
+            q.order_by(SysUser.id.desc())
+            .offset((page_num - 1) * page_size)
+            .limit(page_size)
+        )
+    ).all()
 
     data = {
         "list": [user_row(u) for u in rows],
@@ -124,17 +133,17 @@ def user_list_page(
 
 
 @router.post("/add", dependencies=[Depends(require_permission("user:add"))])
-def user_add(
+async def user_add(
     body: UserAddBody,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
 ) -> Dict[str, Any]:
-    ctx = require_user(x_access_token)
+    ctx = await require_user(x_access_token)
     if not ctx:
         return make_response(401, data={}, msg="登录过期，请重新登录")
 
     name = body.username.strip()
-    if db.query(SysUser).filter(SysUser.username == name, SysUser.is_delete == 0).first():
+    if (await db.scalars(select(SysUser).where(SysUser.username == name, SysUser.is_delete == 0))).first():
         return make_response(500, data={}, msg="用户名已存在")
 
     gv = (str(body.gender).strip() if body.gender is not None else "") or "3"
@@ -150,24 +159,24 @@ def user_add(
     )
     if body.roleIds:
         roles = (
-            db.query(SysRole)
-            .filter(SysRole.id.in_(body.roleIds), SysRole.is_active == True, SysRole.is_delete == 0)  # noqa: E712
-            .all()
-        )
+            await db.scalars(
+                select(SysRole).where(SysRole.id.in_(body.roleIds), SysRole.is_active == True, SysRole.is_delete == 0)  # noqa: E712
+            )
+        ).all()
         u.roles = roles
     db.add(u)
-    db.commit()
+    await db.commit()
     invalidate_user_perms_cache(u.id)
     return make_response(200, data={}, msg="新增成功")
 
 
 @router.post("/delete", dependencies=[Depends(require_permission("user:delete"))])
-def user_delete(
+async def user_delete(
     body: UserDeleteBody,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
 ) -> Dict[str, Any]:
-    ctx = require_user(x_access_token)
+    ctx = await require_user(x_access_token)
     if not ctx:
         return make_response(401, data={}, msg="登录过期，请重新登录")
 
@@ -177,7 +186,7 @@ def user_delete(
         uid = int(raw) if not isinstance(raw, int) else raw
         if uid == current_uid:
             return make_response(500, data={}, msg="不能删除当前登录用户")
-        u = db.query(SysUser).filter(SysUser.id == uid, SysUser.is_delete == 0).first()
+        u = (await db.scalars(select(SysUser).where(SysUser.id == uid, SysUser.is_delete == 0))).first()
         if u:
             u.is_delete = 1
             u.delete_time = datetime.now()
@@ -185,7 +194,7 @@ def user_delete(
     if not deleted:
         return make_response(500, data={}, msg="用户不存在或已删除")
 
-    db.commit()
+    await db.commit()
     for raw in body.id:
         uid = int(raw) if not isinstance(raw, int) else raw
         invalidate_user_perms_cache(uid)
@@ -193,17 +202,23 @@ def user_delete(
 
 
 @router.post("/edit", dependencies=[Depends(require_permission("user:edit"))])
-def user_edit(
+async def user_edit(
     body: UserEditBody,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
 ) -> Dict[str, Any]:
-    ctx = require_user(x_access_token)
+    ctx = await require_user(x_access_token)
     if not ctx:
         return make_response(401, data={}, msg="登录过期，请重新登录")
 
     uid = int(body.id) if not isinstance(body.id, int) else body.id
-    u = db.query(SysUser).filter(SysUser.id == uid, SysUser.is_delete == 0).first()
+    u = (
+        await db.scalars(
+            select(SysUser)
+            .where(SysUser.id == uid, SysUser.is_delete == 0)
+            .options(selectinload(SysUser.roles), selectinload(SysUser.dept))
+        )
+    ).first()
     if not u:
         return make_response(500, data={}, msg="用户不存在")
 
@@ -212,7 +227,9 @@ def user_edit(
         if not name:
             return make_response(500, data={}, msg="用户名不能为空")
         if name != u.username:
-            other = db.query(SysUser).filter(SysUser.username == name, SysUser.id != uid, SysUser.is_delete == 0).first()
+            other = (
+                await db.scalars(select(SysUser).where(SysUser.username == name, SysUser.id != uid, SysUser.is_delete == 0))
+            ).first()
             if other:
                 return make_response(500, data={}, msg="用户名已存在")
             u.username = name
@@ -228,26 +245,26 @@ def user_edit(
     role_ids = list(dict.fromkeys([int(rid) for rid in (body.roleIds or [])]))
     if role_ids:
         roles = (
-            db.query(SysRole)
-            .filter(SysRole.id.in_(role_ids), SysRole.is_active == True, SysRole.is_delete == 0)  # noqa: E712
-            .all()
-        )
+            await db.scalars(
+                select(SysRole).where(SysRole.id.in_(role_ids), SysRole.is_active == True, SysRole.is_delete == 0)  # noqa: E712
+            )
+        ).all()
         u.roles = roles
     else:
         u.roles = []
 
-    db.commit()
+    await db.commit()
     invalidate_user_perms_cache(uid)
     return make_response(200, data={}, msg="编辑成功")
 
 
 @router.post("/changeStatus")
-def user_change_status(
+async def user_change_status(
     body: UserChangeStatusBody,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
 ) -> Dict[str, Any]:
-    ctx = require_user(x_access_token)
+    ctx = await require_user(x_access_token)
     if not ctx:
         return make_response(401, data={}, msg="登录过期，请重新登录")
 
@@ -260,22 +277,22 @@ def user_change_status(
     if uid == current_uid and body.status == 0:
         return make_response(500, data={}, msg="不能禁用当前登录用户")
 
-    u = db.query(SysUser).filter(SysUser.id == uid, SysUser.is_delete == 0).first()
+    u = (await db.scalars(select(SysUser).where(SysUser.id == uid, SysUser.is_delete == 0))).first()
     if not u:
         return make_response(500, data={}, msg="用户不存在")
 
     u.is_active = bool(body.status)
-    db.commit()
+    await db.commit()
     invalidate_user_perms_cache(uid)
     return make_response(200, data={}, msg="状态修改成功")
 
 
 @router.get("/template")
 @router.post("/template")
-def user_template_download(
+async def user_template_download(
     x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
 ) -> Response:
-    ctx = require_user(x_access_token)
+    ctx = await require_user(x_access_token)
     if not ctx:
         raise HTTPException(status_code=401, detail="登录过期，请重新登录")
 
@@ -289,11 +306,14 @@ def user_template_download(
             "角色": "普通用户",
         }
     ]
-    df = pd.DataFrame(template_rows, columns=["用户名", "姓名", "性别", "手机号", "邮箱", "角色"])
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="用户导入模板")
-    excel_bytes = output.getvalue()
+    def _build_template_excel_bytes() -> bytes:
+        df = pd.DataFrame(template_rows, columns=["用户名", "姓名", "性别", "手机号", "邮箱", "角色"])
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine="openpyxl") as writer:
+            df.to_excel(writer, index=False, sheet_name="用户导入模板")
+        return output.getvalue()
+
+    excel_bytes = await run_in_threadpool(_build_template_excel_bytes)
     filename = "用户导入模板.xlsx"
     quoted_name = quote(filename)
     headers = {
@@ -308,17 +328,22 @@ def user_template_download(
 
 
 @router.post("/export")
-def user_export(
+async def user_export(
     body: Optional[UserExportBody] = None,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
 ) -> Response:
-    ctx = require_user(x_access_token)
+    ctx = await require_user(x_access_token)
     if not ctx:
         raise HTTPException(status_code=401, detail="登录过期，请重新登录")
 
     query_body = body or UserExportBody()
-    users = prepare_user_export_query(db, query_body.username, query_body.gender).all()
+    q = select(SysUser).where(SysUser.is_delete == 0).options(selectinload(SysUser.roles), selectinload(SysUser.dept))
+    if query_body.username and query_body.username.strip():
+        q = q.where(SysUser.username.like(f"%{query_body.username.strip()}%"))
+    if query_body.gender is not None and str(query_body.gender).strip() != "":
+        q = q.where(SysUser.gender == str(query_body.gender).strip())
+    users = (await db.scalars(q.order_by(SysUser.id.desc()))).all()
 
     rows: List[Dict[str, Any]] = []
     for u in users:
@@ -336,14 +361,17 @@ def user_export(
             }
         )
 
-    df = pd.DataFrame(
-        rows,
-        columns=["用户名", "姓名", "性别", "手机号", "邮箱", "角色", "状态", "创建时间"],
-    )
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="用户列表")
-    excel_bytes = output.getvalue()
+    def _build_export_excel_bytes() -> bytes:
+        df = pd.DataFrame(
+            rows,
+            columns=["用户名", "姓名", "性别", "手机号", "邮箱", "角色", "状态", "创建时间"],
+        )
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine="openpyxl") as writer:
+            df.to_excel(writer, index=False, sheet_name="用户列表")
+        return output.getvalue()
+
+    excel_bytes = await run_in_threadpool(_build_export_excel_bytes)
 
     ts = datetime.now().strftime("%Y%m%d%H%M%S")
     filename = f"用户列表_{ts}.xlsx"
@@ -362,17 +390,17 @@ def user_export(
 @router.post("/import")
 async def user_import(
     file: UploadFile = File(...),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
 ) -> Dict[str, Any]:
-    ctx = require_user(x_access_token)
+    ctx = await require_user(x_access_token)
     if not ctx:
         return make_response(401, data={}, msg="登录过期，请重新登录")
 
     required_cols = ["用户名", "姓名", "性别", "手机号", "邮箱", "角色"]
     try:
         file_bytes = await file.read()
-        dataframe = pd.read_excel(BytesIO(file_bytes), engine="openpyxl")
+        dataframe = await run_in_threadpool(lambda: pd.read_excel(BytesIO(file_bytes), engine="openpyxl"))
     except Exception as exc:
         return make_response(500, data={}, msg=f"读取 Excel 失败: {exc}")
     finally:
@@ -382,7 +410,9 @@ async def user_import(
         if col not in dataframe.columns:
             return make_response(500, data={}, msg=f"导入失败，缺少列: {col}")
 
-    role_rows = db.query(SysRole).filter(SysRole.is_active == True, SysRole.is_delete == 0).all()  # noqa: E712
+    role_rows = (
+        await db.scalars(select(SysRole).where(SysRole.is_active == True, SysRole.is_delete == 0))  # noqa: E712
+    ).all()
     role_map = {r.name.strip(): r for r in role_rows if (r.name or "").strip()}
 
     success_count = 0
@@ -403,7 +433,10 @@ async def user_import(
         if not username:
             failed_details.append(f"第{line_no}行: 用户名不能为空")
             continue
-        if username in in_batch_usernames or db.query(SysUser).filter(SysUser.username == username, SysUser.is_delete == 0).first():
+        user_exists = (
+            await db.scalars(select(SysUser).where(SysUser.username == username, SysUser.is_delete == 0))
+        ).first()
+        if username in in_batch_usernames or user_exists:
             failed_details.append(f"第{line_no}行: 用户名[{username}]已存在")
             continue
 
@@ -434,11 +467,11 @@ async def user_import(
             for user, roles in pending_relations:
                 user.roles = roles
                 db.add(user)
-            db.commit()
+            await db.commit()
             for user in pending_users:
                 invalidate_user_perms_cache(user.id)
         except Exception as exc:
-            db.rollback()
+            await db.rollback()
             return make_response(500, data={}, msg=f"导入失败，数据库写入异常: {exc}")
 
     fail_count = len(failed_details)

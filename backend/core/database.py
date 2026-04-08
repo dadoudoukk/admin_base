@@ -1,26 +1,23 @@
-from sqlalchemy import create_engine
-from sqlalchemy.orm import DeclarativeBase, sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.orm import DeclarativeBase
 
 from core.config import get_settings
 
 _settings = get_settings()
 DATABASE_URL = _settings.database_url
 
-# 默认使用 sqlite，便于快速启动；MySQL 等连接串见 backend/.env 中 DATABASE_URL
-is_sqlite = DATABASE_URL.startswith("sqlite")
-engine = create_engine(
+async_engine = create_async_engine(
     DATABASE_URL,
-    future=True,
     echo=False,
-    pool_pre_ping=True,   # MySQL 推荐
-    connect_args={"check_same_thread": False} if is_sqlite else {},
+    pool_pre_ping=True,
+    future=True,
 )
 
-SessionLocal = sessionmaker(
-    bind=engine,
+AsyncSessionLocal = async_sessionmaker(
+    bind=async_engine,
     autoflush=False,
-    autocommit=False,
-    future=True,
+    expire_on_commit=False,
+    class_=AsyncSession,
 )
 
 

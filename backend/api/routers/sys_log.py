@@ -5,10 +5,11 @@ from urllib.parse import quote
 
 import pandas as pd
 from fastapi import APIRouter, Depends, Header, HTTPException
-from sqlalchemy.orm import Session
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import Response
 
-from api.deps import get_db, make_response, require_user
+from api.deps import get_async_db, make_response, require_user
 from api.helpers import build_sys_log_export_query, oper_log_row
 from models import SysOperLog
 from schemas.system import SysOperLogExportBody, SysOperLogListBody
@@ -17,28 +18,29 @@ router = APIRouter(prefix="/sys/log", tags=["操作日志"])
 
 
 @router.post("/list")
-def sys_oper_log_list(
+async def sys_oper_log_list(
     body: SysOperLogListBody,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
 ) -> Dict[str, Any]:
-    ctx = require_user(x_access_token)
+    ctx = await require_user(x_access_token)
     if not ctx:
         return make_response(401, data={}, msg="登录过期，请重新登录")
 
-    q = db.query(SysOperLog).filter(SysOperLog.is_delete == 0)
+    q = select(SysOperLog).where(SysOperLog.is_delete == 0)
     if body.userName and body.userName.strip():
-        q = q.filter(SysOperLog.user_name.like(f"%{body.userName.strip()}%"))
+        q = q.where(SysOperLog.user_name.like(f"%{body.userName.strip()}%"))
     if body.requestMethod and body.requestMethod.strip():
-        q = q.filter(SysOperLog.request_method == body.requestMethod.strip().upper())
+        q = q.where(SysOperLog.request_method == body.requestMethod.strip().upper())
 
-    total = q.count()
+    total = len((await db.scalars(q)).all())
     rows = (
-        q.order_by(SysOperLog.create_time.desc())
-        .offset((body.pageNum - 1) * body.pageSize)
-        .limit(body.pageSize)
-        .all()
-    )
+        await db.scalars(
+            q.order_by(SysOperLog.create_time.desc())
+            .offset((body.pageNum - 1) * body.pageSize)
+            .limit(body.pageSize)
+        )
+    ).all()
     return make_response(
         200,
         data={
@@ -53,16 +55,16 @@ def sys_oper_log_list(
 
 @router.post("/export")
 @router.get("/export")
-def sys_oper_log_export(
+async def sys_oper_log_export(
     body: Optional[SysOperLogExportBody] = None,
     userName: Optional[str] = None,
     requestMethod: Optional[str] = None,
     startTime: Optional[str] = None,
     endTime: Optional[str] = None,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
 ) -> Response:
-    ctx = require_user(x_access_token)
+    ctx = await require_user(x_access_token)
     if not ctx:
         raise HTTPException(status_code=401, detail="登录过期，请重新登录")
 
@@ -71,13 +73,13 @@ def sys_oper_log_export(
     query_start_time = (body.startTime if body else None) or startTime
     query_end_time = (body.endTime if body else None) or endTime
 
-    rows = build_sys_log_export_query(
+    rows = await build_sys_log_export_query(
         db,
         query_user_name,
         query_request_method,
         query_start_time,
         query_end_time,
-    ).all()
+    )
 
     export_rows: List[Dict[str, Any]] = []
     for item in rows:

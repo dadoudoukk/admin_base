@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, File, Header, Request, UploadFile
+from fastapi.concurrency import run_in_threadpool
 
 from api.deps import make_response, require_user
 from core.paths import UPLOAD_DIR
@@ -18,7 +19,7 @@ async def file_upload(
     file: UploadFile = File(...),
     x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
 ) -> Dict[str, Any]:
-    ctx = require_user(x_access_token)
+    ctx = await require_user(x_access_token)
     if not ctx:
         return make_response(401, data={}, msg="登录过期，请重新登录")
 
@@ -31,8 +32,11 @@ async def file_upload(
     new_name = f"{uuid.uuid4().hex}{suffix}"
     dest = UPLOAD_DIR / new_name
     try:
-        with dest.open("wb") as out:
-            shutil.copyfileobj(file.file, out)
+        def _save_upload() -> None:
+            with dest.open("wb") as out:
+                shutil.copyfileobj(file.file, out)
+
+        await run_in_threadpool(_save_upload)
     finally:
         await file.close()
 

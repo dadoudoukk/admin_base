@@ -1,4 +1,4 @@
-from core.database import Base, SessionLocal, engine
+from core.database import AsyncSessionLocal, Base, async_engine
 from models.business import BizFragmentCategory, BizFragmentContent, BizNewsArticle, BizNewsCategory
 from models.dictionary import SysDictData, SysDictType
 from models.rbac import DataScopeEnum, SysMenu, SysRole, SysRoleDept, SysRoleMenu, SysUser, SysUserRole
@@ -6,8 +6,8 @@ from models.system import SysDept, SysOperLog
 
 __all__ = [
     "Base",
-    "engine",
-    "SessionLocal",
+    "async_engine",
+    "AsyncSessionLocal",
     "DataScopeEnum",
     "SysUser",
     "SysRole",

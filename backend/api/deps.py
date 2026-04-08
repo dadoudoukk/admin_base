@@ -5,6 +5,7 @@ import jwt
 from fastapi import Depends, Header, HTTPException
 from passlib.context import CryptContext
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session, selectinload
 
 from core.config import get_settings
@@ -15,7 +16,7 @@ from core.context import (
     ctx_is_superuser,
     ctx_user_id,
 )
-from core.database import SessionLocal
+from core.database import AsyncSessionLocal
 from core.redis_client import cache_delete, cache_delete_by_pattern, cache_get_or_set_json
 from models import SysMenu, SysRoleMenu, SysUser, SysUserRole
 from models.rbac import DataScopeEnum, SysRole
@@ -28,11 +29,14 @@ USER_PERMS_CACHE_PREFIX = "user:perms:"
 
 
 def get_db():
-    db = SessionLocal()
-    try:
+    raise RuntimeError("同步 get_db 已废弃，请使用 get_async_db")
+
+
+async def get_async_db():
+    if AsyncSessionLocal is None:
+        raise RuntimeError("AsyncSessionLocal 未初始化，请将 DATABASE_URL 配置为异步驱动连接串")
+    async with AsyncSessionLocal() as db:
         yield db
-    finally:
-        db.close()
 
 
 def make_response(code: int, data: Any = None, msg: str = "success") -> Dict[str, Any]:
@@ -73,7 +77,7 @@ def _user_to_ctx_dict(user: SysUser) -> Dict[str, Any]:
     }
 
 
-def _collect_descendant_dept_ids(db: Session, roots: set[int]) -> set[int]:
+async def _collect_descendant_dept_ids(db: AsyncSession, roots: set[int]) -> set[int]:
     """批量 BFS 收集多个根部门的子孙部门 ID（含根）。"""
     if not roots:
         return set()
@@ -81,7 +85,7 @@ def _collect_descendant_dept_ids(db: Session, roots: set[int]) -> set[int]:
     frontier: set[int] = set(roots)
     while frontier:
         stmt = select(SysDept.id).where(SysDept.parent_id.in_(list(frontier)), SysDept.is_delete == 0)
-        children = set(db.scalars(stmt).all())
+        children = set((await db.scalars(stmt)).all())
         children -= acc
         if not children:
             break
@@ -90,7 +94,7 @@ def _collect_descendant_dept_ids(db: Session, roots: set[int]) -> set[int]:
     return acc
 
 
-def activate_data_permission_context(db: Session, user: SysUser) -> None:
+async def activate_data_permission_context(db: AsyncSession, user: SysUser) -> None:
     """
     将当前用户的数据权限写入 contextvars（预计算可见部门集合，拦截器不做 DB IO）。
     """
@@ -135,7 +139,7 @@ def activate_data_permission_context(db: Session, user: SysUser) -> None:
                 custom_depts.add(assoc.dept_id)
 
     allowed_dept_ids |= dept_only_roots
-    allowed_dept_ids |= _collect_descendant_dept_ids(db, dept_tree_roots)
+    allowed_dept_ids |= await _collect_descendant_dept_ids(db, dept_tree_roots)
     allowed_dept_ids |= custom_depts
 
     # SELF_ONLY 仅在没有任何部门范围时才生效
@@ -147,7 +151,7 @@ def activate_data_permission_context(db: Session, user: SysUser) -> None:
         ctx_allowed_dept_ids.set([])
 
 
-def _load_user_by_id_for_auth(db: Session, user_id: int) -> Optional[SysUser]:
+async def _load_user_by_id_for_auth(db: AsyncSession, user_id: int) -> Optional[SysUser]:
     stmt = (
         select(SysUser)
         .where(SysUser.id == user_id, SysUser.is_delete == 0)
@@ -155,10 +159,10 @@ def _load_user_by_id_for_auth(db: Session, user_id: int) -> Optional[SysUser]:
             selectinload(SysUser.roles).selectinload(SysRole.role_dept_associations),
         )
     )
-    return db.scalars(stmt).first()
+    return (await db.scalars(stmt)).first()
 
 
-def require_user_with_data_perm(db: Session, x_access_token: Optional[str]) -> Optional[dict]:
+async def require_user_with_data_perm(db: AsyncSession, x_access_token: Optional[str]) -> Optional[dict]:
     """解析 Token，加载用户及角色关联，写入数据权限上下文并返回与 require_user 相同结构的字典。"""
     if not x_access_token:
         return None
@@ -168,14 +172,14 @@ def require_user_with_data_perm(db: Session, x_access_token: Optional[str]) -> O
     user_id = claims.get("user_id")
     if user_id is None:
         return None
-    user = _load_user_by_id_for_auth(db, int(user_id))
+    user = await _load_user_by_id_for_auth(db, int(user_id))
     if not user or not user.is_active:
         return None
-    activate_data_permission_context(db, user)
+    await activate_data_permission_context(db, user)
     return _user_to_ctx_dict(user)
 
 
-def require_user(x_access_token: Optional[str]) -> Optional[dict]:
+async def require_user(x_access_token: Optional[str]) -> Optional[dict]:
     if not x_access_token:
         return None
     claims = decode_access_token(x_access_token)
@@ -185,14 +189,13 @@ def require_user(x_access_token: Optional[str]) -> Optional[dict]:
     if user_id is None:
         return None
 
-    db = SessionLocal()
-    try:
-        user = _load_user_by_id_for_auth(db, int(user_id))
+    if AsyncSessionLocal is None:
+        return None
+    async with AsyncSessionLocal() as db:
+        user = await _load_user_by_id_for_auth(db, int(user_id))
         if not user or not user.is_active:
             return None
         return _user_to_ctx_dict(user)
-    finally:
-        db.close()
 
 
 def fetch_button_menus_for_user(db: Session, ctx: dict) -> List[SysMenu]:
@@ -283,14 +286,14 @@ def invalidate_all_user_perms_caches() -> None:
 
 
 def require_permission(permission_code: str):
-    def _checker(
+    async def _checker(
         x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
-        db: Session = Depends(get_db),
+        db: AsyncSession = Depends(get_async_db),
     ) -> bool:
-        ctx = require_user(x_access_token)
+        ctx = await require_user(x_access_token)
         if not ctx:
             raise HTTPException(status_code=401, detail="登录过期，请重新登录")
-        bundle = get_user_perms_bundle(db, ctx)
+        bundle = await db.run_sync(lambda s: get_user_perms_bundle(s, ctx))
         codes = set(bundle.get("codes") or [])
         if permission_code not in codes:
             raise HTTPException(status_code=403, detail="无权限访问")
