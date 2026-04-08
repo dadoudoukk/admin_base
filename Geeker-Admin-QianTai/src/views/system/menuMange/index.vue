@@ -62,11 +62,7 @@
           <el-input v-model="form.icon" placeholder="Element 图标名，如 HomeFilled" clearable />
         </el-form-item>
         <el-form-item label="权限标识" prop="permission">
-          <el-input
-            v-model="form.permission"
-            placeholder="按钮建议填写如 user:delete（按钮为空时默认回填为 name）"
-            clearable
-          />
+          <el-input v-model="form.permission" placeholder="按钮建议填写如 user:delete（按钮为空时默认回填为 name）" clearable />
         </el-form-item>
         <el-form-item label="排序" prop="sort">
           <el-input-number v-model="form.sort" :min="0" controls-position="right" style="width: 100%" />
