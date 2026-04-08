@@ -1,8 +1,9 @@
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, Depends, Header
+from fastapi import APIRouter, Depends, Header, Request
 from sqlalchemy.orm import Session
 
+from core.limiter import limiter
 from api.deps import (
     create_access_token,
     get_db,
@@ -18,9 +19,10 @@ router = APIRouter(tags=["认证"])
 
 
 @router.post("/login")
-def login(body: LoginBody, db: Session = Depends(get_db)) -> Dict[str, Any]:
+@limiter.limit("5/minute")
+def login(request: Request, body: LoginBody, db: Session = Depends(get_db)) -> Dict[str, Any]:
     username = body.username.strip()
-    user = db.query(SysUser).filter(SysUser.username == username).first()
+    user = db.query(SysUser).filter(SysUser.username == username, SysUser.is_delete == 0).first()
     if not user:
         return make_response(500, data={}, msg="用户名或密码错误")
     if not pwd_context.verify(body.password, user.password):

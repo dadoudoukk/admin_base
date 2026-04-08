@@ -7,6 +7,7 @@ from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, Uni
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from core.database import Base
+from models.base import SoftDeleteMixin
 
 
 class SysUserRole(Base):
@@ -37,7 +38,7 @@ class SysRoleMenu(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 
 
-class SysUser(Base):
+class SysUser(SoftDeleteMixin, Base):
     """
     用户表
     """
@@ -45,7 +46,7 @@ class SysUser(Base):
     __tablename__ = "sys_user"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    username: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    username: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     password: Mapped[str] = mapped_column(String(128), nullable=False, comment="建议保存加盐哈希")
     nickname: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     avatar: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
@@ -68,7 +69,7 @@ class SysUser(Base):
     )
 
 
-class SysRole(Base):
+class SysRole(SoftDeleteMixin, Base):
     """
     角色表
     """
@@ -76,8 +77,8 @@ class SysRole(Base):
     __tablename__ = "sys_role"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    name: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
-    code: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True, comment="例如 admin/editor")
+    name: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    code: Mapped[str] = mapped_column(String(64), nullable=False, index=True, comment="例如 admin/editor")
     description: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
@@ -100,7 +101,7 @@ class SysRole(Base):
     )
 
 
-class SysMenu(Base):
+class SysMenu(SoftDeleteMixin, Base):
     """
     菜单/权限表（支持目录、菜单、按钮）
     """

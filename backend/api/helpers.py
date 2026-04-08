@@ -152,6 +152,7 @@ def fetch_menu_rows_for_user(db: Session, ctx: dict) -> List[SysMenu]:
     """超级管理员 / admin 角色：查全部有效菜单；否则按角色关联菜单并补全父级链。"""
     base_q = (
         db.query(SysMenu)
+        .filter(SysMenu.is_delete == 0)
         .filter(SysMenu.status == True)  # noqa: E712
         .filter(SysMenu.menu_type.in_(["CATALOG", "MENU"]))
     )
@@ -160,7 +161,7 @@ def fetch_menu_rows_for_user(db: Session, ctx: dict) -> List[SysMenu]:
         return base_q.order_by(SysMenu.sort.asc(), SysMenu.id.asc()).all()
 
     uid = ctx["user_id"]
-    user = db.query(SysUser).filter(SysUser.id == uid).first()
+    user = db.query(SysUser).filter(SysUser.id == uid, SysUser.is_delete == 0).first()
     if not user:
         return []
 
@@ -340,7 +341,7 @@ def build_sys_log_export_query(
     start_time: Optional[str],
     end_time: Optional[str],
 ):
-    q = db.query(SysOperLog)
+    q = db.query(SysOperLog).filter(SysOperLog.is_delete == 0)
     if user_name and user_name.strip():
         q = q.filter(SysOperLog.user_name.like(f"%{user_name.strip()}%"))
     if request_method and request_method.strip():
@@ -392,7 +393,7 @@ def gender_to_value(gender_label: str) -> str:
 
 
 def prepare_user_export_query(db: Session, username: Optional[str], gender: Optional[str]):
-    q = db.query(SysUser)
+    q = db.query(SysUser).filter(SysUser.is_delete == 0)
     if username and username.strip():
         q = q.filter(SysUser.username.like(f"%{username.strip()}%"))
     if gender is not None and str(gender).strip() != "":
@@ -404,6 +405,7 @@ def query_menu_tree_for_manage(db: Session) -> List[dict]:
     """菜单管理：返回全部菜单（含停用）树。"""
     rows = (
         db.query(SysMenu)
+        .filter(SysMenu.is_delete == 0)
         .order_by(SysMenu.sort.asc(), SysMenu.id.asc())
         .all()
     )
@@ -412,11 +414,11 @@ def query_menu_tree_for_manage(db: Session) -> List[dict]:
 
 def compute_home_statistics(db: Session) -> Dict[str, Any]:
     return {
-        "userCount": db.query(SysUser).count(),
-        "roleCount": db.query(SysRole).count(),
-        "menuCount": db.query(SysMenu).count(),
-        "newsArticleCount": db.query(BizNewsArticle).count(),
-        "newsCategoryCount": db.query(BizNewsCategory).count(),
-        "fragmentContentCount": db.query(BizFragmentContent).count(),
-        "operLogCount": db.query(SysOperLog).count(),
+        "userCount": db.query(SysUser).filter(SysUser.is_delete == 0).count(),
+        "roleCount": db.query(SysRole).filter(SysRole.is_delete == 0).count(),
+        "menuCount": db.query(SysMenu).filter(SysMenu.is_delete == 0).count(),
+        "newsArticleCount": db.query(BizNewsArticle).filter(BizNewsArticle.is_delete == 0).count(),
+        "newsCategoryCount": db.query(BizNewsCategory).filter(BizNewsCategory.is_delete == 0).count(),
+        "fragmentContentCount": db.query(BizFragmentContent).filter(BizFragmentContent.is_delete == 0).count(),
+        "operLogCount": db.query(SysOperLog).filter(SysOperLog.is_delete == 0).count(),
     }

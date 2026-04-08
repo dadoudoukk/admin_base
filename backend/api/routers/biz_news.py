@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, Header
@@ -49,7 +50,7 @@ def news_category_list(
     if not ctx:
         return make_response(401, data={}, msg="登录过期，请重新登录")
 
-    q = db.query(BizNewsCategory)
+    q = db.query(BizNewsCategory).filter(BizNewsCategory.is_delete == 0)
     if body.categoryName and body.categoryName.strip():
         q = q.filter(BizNewsCategory.category_name.like(f"%{body.categoryName.strip()}%"))
 
@@ -87,7 +88,7 @@ def news_category_add(
     category_name = body.categoryName.strip()
     if not category_name:
         return make_response(500, data={}, msg="分类名称不能为空")
-    if db.query(BizNewsCategory).filter(BizNewsCategory.category_name == category_name).first():
+    if db.query(BizNewsCategory).filter(BizNewsCategory.category_name == category_name, BizNewsCategory.is_delete == 0).first():
         return make_response(500, data={}, msg="分类名称已存在")
 
     db.add(
@@ -115,7 +116,7 @@ def news_category_edit(
     if body.status not in (0, 1):
         return make_response(500, data={}, msg="状态参数无效")
     cid = int(body.id) if not isinstance(body.id, int) else body.id
-    row = db.query(BizNewsCategory).filter(BizNewsCategory.id == cid).first()
+    row = db.query(BizNewsCategory).filter(BizNewsCategory.id == cid, BizNewsCategory.is_delete == 0).first()
     if not row:
         return make_response(500, data={}, msg="分类不存在")
 
@@ -124,7 +125,7 @@ def news_category_edit(
         return make_response(500, data={}, msg="分类名称不能为空")
     other = (
         db.query(BizNewsCategory)
-        .filter(BizNewsCategory.category_name == category_name, BizNewsCategory.id != cid)
+        .filter(BizNewsCategory.category_name == category_name, BizNewsCategory.id != cid, BizNewsCategory.is_delete == 0)
         .first()
     )
     if other:
@@ -151,9 +152,10 @@ def news_category_delete(
     deleted = 0
     for raw in body.id:
         cid = int(raw) if not isinstance(raw, int) else raw
-        row = db.query(BizNewsCategory).filter(BizNewsCategory.id == cid).first()
+        row = db.query(BizNewsCategory).filter(BizNewsCategory.id == cid, BizNewsCategory.is_delete == 0).first()
         if row:
-            db.delete(row)
+            row.is_delete = 1
+            row.delete_time = datetime.now()
             deleted += 1
     if not deleted:
         return make_response(500, data={}, msg="分类不存在或已删除")
@@ -175,7 +177,7 @@ def news_category_change_status(
     if body.status not in (0, 1):
         return make_response(500, data={}, msg="状态参数无效")
     cid = int(body.id) if not isinstance(body.id, int) else body.id
-    row = db.query(BizNewsCategory).filter(BizNewsCategory.id == cid).first()
+    row = db.query(BizNewsCategory).filter(BizNewsCategory.id == cid, BizNewsCategory.is_delete == 0).first()
     if not row:
         return make_response(500, data={}, msg="分类不存在")
 
@@ -195,7 +197,7 @@ def news_category_all(
 
     rows = (
         db.query(BizNewsCategory)
-        .filter(BizNewsCategory.status == 1)
+        .filter(BizNewsCategory.status == 1, BizNewsCategory.is_delete == 0)
         .order_by(BizNewsCategory.sort.asc(), BizNewsCategory.id.asc())
         .all()
     )
@@ -213,7 +215,7 @@ def news_article_list(
     if not ctx:
         return make_response(401, data={}, msg="登录过期，请重新登录")
 
-    q = db.query(BizNewsArticle)
+    q = db.query(BizNewsArticle).filter(BizNewsArticle.is_delete == 0)
     if body.title and body.title.strip():
         q = q.filter(BizNewsArticle.title.like(f"%{body.title.strip()}%"))
     if body.categoryId is not None and str(body.categoryId).strip() != "":
@@ -227,7 +229,9 @@ def news_article_list(
         .limit(body.pageSize)
         .all()
     )
-    category_map = {str(c.id): c.category_name for c in db.query(BizNewsCategory).all()}
+    category_map = {
+        str(c.id): c.category_name for c in db.query(BizNewsCategory).filter(BizNewsCategory.is_delete == 0).all()
+    }
     data_list = [news_article_row(r, category_map.get(str(r.category_id), "")) for r in rows]
     return make_response(
         200,
@@ -254,7 +258,7 @@ def news_article_add(
     if body.newsType not in (0, 1) or body.isTop not in (0, 1) or body.status not in (0, 1):
         return make_response(500, data={}, msg="状态或类型参数无效")
     cid = int(body.categoryId) if not isinstance(body.categoryId, int) else body.categoryId
-    if not db.query(BizNewsCategory).filter(BizNewsCategory.id == cid).first():
+    if not db.query(BizNewsCategory).filter(BizNewsCategory.id == cid, BizNewsCategory.is_delete == 0).first():
         return make_response(500, data={}, msg="新闻分类不存在")
 
     title = body.title.strip()
@@ -291,12 +295,12 @@ def news_article_edit(
     if body.newsType not in (0, 1) or body.isTop not in (0, 1) or body.status not in (0, 1):
         return make_response(500, data={}, msg="状态或类型参数无效")
     aid = int(body.id) if not isinstance(body.id, int) else body.id
-    row = db.query(BizNewsArticle).filter(BizNewsArticle.id == aid).first()
+    row = db.query(BizNewsArticle).filter(BizNewsArticle.id == aid, BizNewsArticle.is_delete == 0).first()
     if not row:
         return make_response(500, data={}, msg="文章不存在")
 
     cid = int(body.categoryId) if not isinstance(body.categoryId, int) else body.categoryId
-    if not db.query(BizNewsCategory).filter(BizNewsCategory.id == cid).first():
+    if not db.query(BizNewsCategory).filter(BizNewsCategory.id == cid, BizNewsCategory.is_delete == 0).first():
         return make_response(500, data={}, msg="新闻分类不存在")
 
     title = body.title.strip()
@@ -329,9 +333,10 @@ def news_article_delete(
     deleted = 0
     for raw in body.id:
         aid = int(raw) if not isinstance(raw, int) else raw
-        row = db.query(BizNewsArticle).filter(BizNewsArticle.id == aid).first()
+        row = db.query(BizNewsArticle).filter(BizNewsArticle.id == aid, BizNewsArticle.is_delete == 0).first()
         if row:
-            db.delete(row)
+            row.is_delete = 1
+            row.delete_time = datetime.now()
             deleted += 1
     if not deleted:
         return make_response(500, data={}, msg="文章不存在或已删除")
@@ -353,7 +358,7 @@ def news_article_change_status(
     if body.status not in (0, 1):
         return make_response(500, data={}, msg="状态参数无效")
     aid = int(body.id) if not isinstance(body.id, int) else body.id
-    row = db.query(BizNewsArticle).filter(BizNewsArticle.id == aid).first()
+    row = db.query(BizNewsArticle).filter(BizNewsArticle.id == aid, BizNewsArticle.is_delete == 0).first()
     if not row:
         return make_response(500, data={}, msg="文章不存在")
 

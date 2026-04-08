@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, Header
@@ -34,7 +35,7 @@ def role_list_page(
     if not ctx:
         return make_response(401, data={}, msg="登录过期，请重新登录")
 
-    q = db.query(SysRole)
+    q = db.query(SysRole).filter(SysRole.is_delete == 0)
     if body.roleName and body.roleName.strip():
         q = q.filter(SysRole.name.like(f"%{body.roleName.strip()}%"))
     if body.roleCode and body.roleCode.strip():
@@ -66,7 +67,7 @@ def role_all(
     ctx = require_user(x_access_token)
     if not ctx:
         return make_response(401, data={}, msg="登录过期，请重新登录")
-    rows = db.query(SysRole).filter(SysRole.is_active == True).order_by(SysRole.id.asc()).all()  # noqa: E712
+    rows = db.query(SysRole).filter(SysRole.is_active == True, SysRole.is_delete == 0).order_by(SysRole.id.asc()).all()  # noqa: E712
     data = [{"id": r.id, "roleName": r.name} for r in rows]
     return make_response(200, data=data, msg="success")
 
@@ -83,9 +84,9 @@ def role_add(
 
     code = body.roleCode.strip()
     name = body.roleName.strip()
-    if db.query(SysRole).filter(SysRole.code == code).first():
+    if db.query(SysRole).filter(SysRole.code == code, SysRole.is_delete == 0).first():
         return make_response(500, data={}, msg="角色标识已存在")
-    if db.query(SysRole).filter(SysRole.name == name).first():
+    if db.query(SysRole).filter(SysRole.name == name, SysRole.is_delete == 0).first():
         return make_response(500, data={}, msg="角色名称已存在")
 
     r = SysRole(
@@ -110,7 +111,7 @@ def role_edit(
         return make_response(401, data={}, msg="登录过期，请重新登录")
 
     rid = int(body.id) if not isinstance(body.id, int) else body.id
-    r = db.query(SysRole).filter(SysRole.id == rid).first()
+    r = db.query(SysRole).filter(SysRole.id == rid, SysRole.is_delete == 0).first()
     if not r:
         return make_response(500, data={}, msg="角色不存在")
 
@@ -123,11 +124,11 @@ def role_edit(
         return make_response(500, data={}, msg="不能修改超级管理员角色标识")
 
     if name != r.name:
-        if db.query(SysRole).filter(SysRole.name == name, SysRole.id != rid).first():
+        if db.query(SysRole).filter(SysRole.name == name, SysRole.id != rid, SysRole.is_delete == 0).first():
             return make_response(500, data={}, msg="角色名称已存在")
         r.name = name
     if code != r.code:
-        if db.query(SysRole).filter(SysRole.code == code, SysRole.id != rid).first():
+        if db.query(SysRole).filter(SysRole.code == code, SysRole.id != rid, SysRole.is_delete == 0).first():
             return make_response(500, data={}, msg="角色标识已存在")
         r.code = code
 
@@ -151,7 +152,7 @@ def role_delete(
     deleted = 0
     for raw in body.id:
         rid = int(raw) if not isinstance(raw, int) else raw
-        role = db.query(SysRole).filter(SysRole.id == rid).first()
+        role = db.query(SysRole).filter(SysRole.id == rid, SysRole.is_delete == 0).first()
         if not role:
             continue
         if role.code == "admin":
@@ -159,7 +160,8 @@ def role_delete(
         bind_count = db.query(SysUserRole).filter(SysUserRole.role_id == rid).count()
         if bind_count > 0:
             return make_response(500, data={}, msg=f"角色【{role.name}】下仍有关联用户，不能删除")
-        db.delete(role)
+        role.is_delete = 1
+        role.delete_time = datetime.now()
         deleted += 1
 
     if not deleted:
@@ -181,7 +183,7 @@ def role_get_menu_ids(
         return make_response(401, data=[], msg="登录过期，请重新登录")
 
     rid = int(body.roleId) if not isinstance(body.roleId, int) else body.roleId
-    role = db.query(SysRole).filter(SysRole.id == rid).first()
+    role = db.query(SysRole).filter(SysRole.id == rid, SysRole.is_delete == 0).first()
     if not role:
         return make_response(500, data=[], msg="角色不存在")
 
@@ -200,7 +202,7 @@ def role_assign_menu(
         return make_response(401, data={}, msg="登录过期，请重新登录")
 
     rid = int(body.roleId) if not isinstance(body.roleId, int) else body.roleId
-    role = db.query(SysRole).filter(SysRole.id == rid).first()
+    role = db.query(SysRole).filter(SysRole.id == rid, SysRole.is_delete == 0).first()
     if not role:
         return make_response(500, data={}, msg="角色不存在")
 

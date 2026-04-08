@@ -7,9 +7,10 @@ from sqlalchemy import DateTime, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from core.database import Base
+from models.base import SoftDeleteMixin
 
 
-class SysOperLog(Base):
+class SysOperLog(SoftDeleteMixin, Base):
     """系统操作日志"""
 
     __tablename__ = "sys_oper_log"

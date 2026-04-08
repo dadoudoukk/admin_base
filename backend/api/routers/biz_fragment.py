@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, Header
@@ -31,7 +32,7 @@ def fragment_category_list(
     if not ctx:
         return make_response(401, data={}, msg="登录过期，请重新登录")
 
-    q = db.query(BizFragmentCategory)
+    q = db.query(BizFragmentCategory).filter(BizFragmentCategory.is_delete == 0)
     if body.code and body.code.strip():
         q = q.filter(BizFragmentCategory.code.like(f"%{body.code.strip()}%"))
     if body.name and body.name.strip():
@@ -70,7 +71,7 @@ def fragment_category_add(
     name = body.name.strip()
     if not code or not name:
         return make_response(500, data={}, msg="标识码与位置名称不能为空")
-    if db.query(BizFragmentCategory).filter(BizFragmentCategory.code == code).first():
+    if db.query(BizFragmentCategory).filter(BizFragmentCategory.code == code, BizFragmentCategory.is_delete == 0).first():
         return make_response(500, data={}, msg="标识码已存在")
 
     db.add(BizFragmentCategory(code=code, name=name, remark=body.remark))
@@ -89,7 +90,7 @@ def fragment_category_edit(
         return make_response(401, data={}, msg="登录过期，请重新登录")
 
     cid = int(body.id) if not isinstance(body.id, int) else body.id
-    row = db.query(BizFragmentCategory).filter(BizFragmentCategory.id == cid).first()
+    row = db.query(BizFragmentCategory).filter(BizFragmentCategory.id == cid, BizFragmentCategory.is_delete == 0).first()
     if not row:
         return make_response(500, data={}, msg="位置不存在")
 
@@ -99,7 +100,7 @@ def fragment_category_edit(
         return make_response(500, data={}, msg="标识码与位置名称不能为空")
     other = (
         db.query(BizFragmentCategory)
-        .filter(BizFragmentCategory.code == code, BizFragmentCategory.id != cid)
+        .filter(BizFragmentCategory.code == code, BizFragmentCategory.id != cid, BizFragmentCategory.is_delete == 0)
         .first()
     )
     if other:
@@ -125,10 +126,17 @@ def fragment_category_delete(
     deleted = 0
     for raw in body.id:
         cid = int(raw) if not isinstance(raw, int) else raw
-        row = db.query(BizFragmentCategory).filter(BizFragmentCategory.id == cid).first()
+        row = db.query(BizFragmentCategory).filter(BizFragmentCategory.id == cid, BizFragmentCategory.is_delete == 0).first()
         if row:
-            db.query(BizFragmentContent).filter(BizFragmentContent.category_id == cid).delete(synchronize_session=False)
-            db.delete(row)
+            related_rows = db.query(BizFragmentContent).filter(
+                BizFragmentContent.category_id == cid, BizFragmentContent.is_delete == 0
+            )
+            now = datetime.now()
+            for related in related_rows:
+                related.is_delete = 1
+                related.delete_time = now
+            row.is_delete = 1
+            row.delete_time = now
             deleted += 1
     if not deleted:
         return make_response(500, data={}, msg="位置不存在或已删除")
@@ -147,7 +155,7 @@ def fragment_content_list(
     if not ctx:
         return make_response(401, data={}, msg="登录过期，请重新登录")
 
-    q = db.query(BizFragmentContent)
+    q = db.query(BizFragmentContent).filter(BizFragmentContent.is_delete == 0)
     if body.categoryId is not None and str(body.categoryId).strip() != "":
         cat_id = int(body.categoryId) if not isinstance(body.categoryId, int) else body.categoryId
         q = q.filter(BizFragmentContent.category_id == cat_id)
@@ -186,7 +194,7 @@ def fragment_content_add(
     if body.status not in (0, 1):
         return make_response(500, data={}, msg="状态参数无效")
     cat_id = int(body.categoryId) if not isinstance(body.categoryId, int) else body.categoryId
-    if not db.query(BizFragmentCategory).filter(BizFragmentCategory.id == cat_id).first():
+    if not db.query(BizFragmentCategory).filter(BizFragmentCategory.id == cat_id, BizFragmentCategory.is_delete == 0).first():
         return make_response(500, data={}, msg="碎片位置不存在")
 
     title = body.title.strip()
@@ -221,7 +229,7 @@ def fragment_content_edit(
     if body.status not in (0, 1):
         return make_response(500, data={}, msg="状态参数无效")
     rid = int(body.id) if not isinstance(body.id, int) else body.id
-    row = db.query(BizFragmentContent).filter(BizFragmentContent.id == rid).first()
+    row = db.query(BizFragmentContent).filter(BizFragmentContent.id == rid, BizFragmentContent.is_delete == 0).first()
     if not row:
         return make_response(500, data={}, msg="内容不存在")
 
@@ -252,9 +260,10 @@ def fragment_content_delete(
     deleted = 0
     for raw in body.id:
         rid = int(raw) if not isinstance(raw, int) else raw
-        r = db.query(BizFragmentContent).filter(BizFragmentContent.id == rid).first()
+        r = db.query(BizFragmentContent).filter(BizFragmentContent.id == rid, BizFragmentContent.is_delete == 0).first()
         if r:
-            db.delete(r)
+            r.is_delete = 1
+            r.delete_time = datetime.now()
             deleted += 1
     if not deleted:
         return make_response(500, data={}, msg="内容不存在或已删除")
@@ -276,7 +285,7 @@ def fragment_content_change_status(
     if body.status not in (0, 1):
         return make_response(500, data={}, msg="状态参数无效")
     rid = int(body.id) if not isinstance(body.id, int) else body.id
-    row = db.query(BizFragmentContent).filter(BizFragmentContent.id == rid).first()
+    row = db.query(BizFragmentContent).filter(BizFragmentContent.id == rid, BizFragmentContent.is_delete == 0).first()
     if not row:
         return make_response(500, data={}, msg="内容不存在")
 

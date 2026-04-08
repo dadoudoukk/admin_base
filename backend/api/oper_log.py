@@ -39,7 +39,7 @@ def save_oper_log_sync(
         if access_token:
             claims = decode_access_token(access_token)
             if claims and claims.get("user_id") is not None:
-                u = db.query(SysUser).filter(SysUser.id == int(claims["user_id"])).first()
+                u = db.query(SysUser).filter(SysUser.id == int(claims["user_id"]), SysUser.is_delete == 0).first()
                 if u:
                     user_name = u.username
         db.add(

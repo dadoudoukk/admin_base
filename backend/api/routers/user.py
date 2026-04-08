@@ -75,7 +75,7 @@ def user_change_password(
     if not ctx:
         return make_response(401, data={}, msg="登录过期，请重新登录")
 
-    user = db.query(SysUser).filter(SysUser.id == ctx["user_id"]).first()
+    user = db.query(SysUser).filter(SysUser.id == ctx["user_id"], SysUser.is_delete == 0).first()
     if not user:
         return make_response(401, data={}, msg="登录过期，请重新登录")
 
@@ -97,7 +97,7 @@ def user_list_page(
     if not ctx:
         return make_response(401, data={}, msg="登录过期，请重新登录")
 
-    q = db.query(SysUser)
+    q = db.query(SysUser).filter(SysUser.is_delete == 0)
     if body.username and body.username.strip():
         kw = f"%{body.username.strip()}%"
         q = q.filter(SysUser.username.like(kw))
@@ -134,7 +134,7 @@ def user_add(
         return make_response(401, data={}, msg="登录过期，请重新登录")
 
     name = body.username.strip()
-    if db.query(SysUser).filter(SysUser.username == name).first():
+    if db.query(SysUser).filter(SysUser.username == name, SysUser.is_delete == 0).first():
         return make_response(500, data={}, msg="用户名已存在")
 
     gv = (str(body.gender).strip() if body.gender is not None else "") or "3"
@@ -149,7 +149,11 @@ def user_add(
         is_superuser=False,
     )
     if body.roleIds:
-        roles = db.query(SysRole).filter(SysRole.id.in_(body.roleIds), SysRole.is_active == True).all()  # noqa: E712
+        roles = (
+            db.query(SysRole)
+            .filter(SysRole.id.in_(body.roleIds), SysRole.is_active == True, SysRole.is_delete == 0)  # noqa: E712
+            .all()
+        )
         u.roles = roles
     db.add(u)
     db.commit()
@@ -173,9 +177,10 @@ def user_delete(
         uid = int(raw) if not isinstance(raw, int) else raw
         if uid == current_uid:
             return make_response(500, data={}, msg="不能删除当前登录用户")
-        u = db.query(SysUser).filter(SysUser.id == uid).first()
+        u = db.query(SysUser).filter(SysUser.id == uid, SysUser.is_delete == 0).first()
         if u:
-            db.delete(u)
+            u.is_delete = 1
+            u.delete_time = datetime.now()
             deleted += 1
     if not deleted:
         return make_response(500, data={}, msg="用户不存在或已删除")
@@ -198,7 +203,7 @@ def user_edit(
         return make_response(401, data={}, msg="登录过期，请重新登录")
 
     uid = int(body.id) if not isinstance(body.id, int) else body.id
-    u = db.query(SysUser).filter(SysUser.id == uid).first()
+    u = db.query(SysUser).filter(SysUser.id == uid, SysUser.is_delete == 0).first()
     if not u:
         return make_response(500, data={}, msg="用户不存在")
 
@@ -207,7 +212,7 @@ def user_edit(
         if not name:
             return make_response(500, data={}, msg="用户名不能为空")
         if name != u.username:
-            other = db.query(SysUser).filter(SysUser.username == name, SysUser.id != uid).first()
+            other = db.query(SysUser).filter(SysUser.username == name, SysUser.id != uid, SysUser.is_delete == 0).first()
             if other:
                 return make_response(500, data={}, msg="用户名已存在")
             u.username = name
@@ -222,7 +227,11 @@ def user_edit(
         u.gender = str(body.gender).strip() or "3"
     role_ids = list(dict.fromkeys([int(rid) for rid in (body.roleIds or [])]))
     if role_ids:
-        roles = db.query(SysRole).filter(SysRole.id.in_(role_ids), SysRole.is_active == True).all()  # noqa: E712
+        roles = (
+            db.query(SysRole)
+            .filter(SysRole.id.in_(role_ids), SysRole.is_active == True, SysRole.is_delete == 0)  # noqa: E712
+            .all()
+        )
         u.roles = roles
     else:
         u.roles = []
@@ -251,7 +260,7 @@ def user_change_status(
     if uid == current_uid and body.status == 0:
         return make_response(500, data={}, msg="不能禁用当前登录用户")
 
-    u = db.query(SysUser).filter(SysUser.id == uid).first()
+    u = db.query(SysUser).filter(SysUser.id == uid, SysUser.is_delete == 0).first()
     if not u:
         return make_response(500, data={}, msg="用户不存在")
 
@@ -373,7 +382,7 @@ async def user_import(
         if col not in dataframe.columns:
             return make_response(500, data={}, msg=f"导入失败，缺少列: {col}")
 
-    role_rows = db.query(SysRole).filter(SysRole.is_active == True).all()  # noqa: E712
+    role_rows = db.query(SysRole).filter(SysRole.is_active == True, SysRole.is_delete == 0).all()  # noqa: E712
     role_map = {r.name.strip(): r for r in role_rows if (r.name or "").strip()}
 
     success_count = 0
@@ -394,7 +403,7 @@ async def user_import(
         if not username:
             failed_details.append(f"第{line_no}行: 用户名不能为空")
             continue
-        if username in in_batch_usernames or db.query(SysUser).filter(SysUser.username == username).first():
+        if username in in_batch_usernames or db.query(SysUser).filter(SysUser.username == username, SysUser.is_delete == 0).first():
             failed_details.append(f"第{line_no}行: 用户名[{username}]已存在")
             continue
 

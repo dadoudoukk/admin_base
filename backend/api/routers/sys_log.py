@@ -26,7 +26,7 @@ def sys_oper_log_list(
     if not ctx:
         return make_response(401, data={}, msg="登录过期，请重新登录")
 
-    q = db.query(SysOperLog)
+    q = db.query(SysOperLog).filter(SysOperLog.is_delete == 0)
     if body.userName and body.userName.strip():
         q = q.filter(SysOperLog.user_name.like(f"%{body.userName.strip()}%"))
     if body.requestMethod and body.requestMethod.strip():

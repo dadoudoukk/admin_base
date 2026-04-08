@@ -1,4 +1,5 @@
 fastapi>=0.100.0
+slowapi>=0.1.9
 pydantic-settings>=2.0.0
 # 文件上传（UploadFile / multipart 表单）依赖
 python-multipart>=0.0.6

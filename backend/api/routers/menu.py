@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, Header
@@ -47,6 +48,7 @@ def menu_all_tree(
 
     rows = (
         db.query(SysMenu)
+        .filter(SysMenu.is_delete == 0)
         .filter(SysMenu.status == True)  # noqa: E712
         .order_by(SysMenu.sort.asc(), SysMenu.id.asc())
         .all()
@@ -83,7 +85,7 @@ def menu_add(
 
     pid = body.parentId
     if pid is not None:
-        parent = db.query(SysMenu).filter(SysMenu.id == pid).first()
+        parent = db.query(SysMenu).filter(SysMenu.id == pid, SysMenu.is_delete == 0).first()
         if not parent:
             return make_response(500, data={}, msg="父级菜单不存在")
 
@@ -121,7 +123,7 @@ def menu_edit(
         return make_response(401, data={}, msg="登录过期，请重新登录")
 
     mid = int(body.id) if not isinstance(body.id, int) else body.id
-    m = db.query(SysMenu).filter(SysMenu.id == mid).first()
+    m = db.query(SysMenu).filter(SysMenu.id == mid, SysMenu.is_delete == 0).first()
     if not m:
         return make_response(500, data={}, msg="菜单不存在")
 
@@ -131,7 +133,7 @@ def menu_edit(
         if body.parentId == 0:
             m.parent_id = None
         else:
-            parent = db.query(SysMenu).filter(SysMenu.id == body.parentId).first()
+            parent = db.query(SysMenu).filter(SysMenu.id == body.parentId, SysMenu.is_delete == 0).first()
             if not parent:
                 return make_response(500, data={}, msg="父级菜单不存在")
             m.parent_id = body.parentId
@@ -179,15 +181,16 @@ def menu_delete(
         return make_response(401, data={}, msg="登录过期，请重新登录")
 
     mid = int(body.id) if not isinstance(body.id, int) else body.id
-    m = db.query(SysMenu).filter(SysMenu.id == mid).first()
+    m = db.query(SysMenu).filter(SysMenu.id == mid, SysMenu.is_delete == 0).first()
     if not m:
         return make_response(500, data={}, msg="菜单不存在")
 
-    has_child = db.query(SysMenu).filter(SysMenu.parent_id == mid).first()
+    has_child = db.query(SysMenu).filter(SysMenu.parent_id == mid, SysMenu.is_delete == 0).first()
     if has_child:
         return make_response(500, data={}, msg="请先删除子菜单")
 
-    db.delete(m)
+    m.is_delete = 1
+    m.delete_time = datetime.now()
     db.commit()
     invalidate_all_user_perms_caches()
     return make_response(200, data={}, msg="删除成功")

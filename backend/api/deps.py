@@ -59,7 +59,7 @@ def require_user(x_access_token: Optional[str]) -> Optional[dict]:
 
     db = SessionLocal()
     try:
-        user = db.query(SysUser).filter(SysUser.id == user_id).first()
+        user = db.query(SysUser).filter(SysUser.id == user_id, SysUser.is_delete == 0).first()
         if not user or not user.is_active:
             return None
         role_name = ""
@@ -82,6 +82,7 @@ def require_user(x_access_token: Optional[str]) -> Optional[dict]:
 def fetch_button_menus_for_user(db: Session, ctx: dict) -> List[SysMenu]:
     q = (
         db.query(SysMenu)
+        .filter(SysMenu.is_delete == 0)
         .filter(SysMenu.status == True)  # noqa: E712
         .filter(SysMenu.menu_type == "BUTTON")
     )

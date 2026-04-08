@@ -12,14 +12,20 @@ from fastapi.staticfiles import StaticFiles
 from starlette.responses import Response
 
 from api.api_router import router as core_router
+from api.deps import make_response
 from api.oper_log import client_ip, flush_oper_log_background, resolve_oper_log_status
 from core.config import get_settings
+from core.limiter import limiter
 from core.paths import UPLOAD_DIR
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 
 logger = logging.getLogger(__name__)
 _settings = get_settings()
 
 app = FastAPI(title="Geeker-Admin FastAPI Auth Center")
+app.state.limiter = limiter
+app.add_middleware(SlowAPIMiddleware)
 
 
 def _validation_error_message(exc: RequestValidationError) -> str:
@@ -44,6 +50,15 @@ async def request_validation_exception_handler(
         status_code=200,
         content={"code": 400, "msg": f"参数校验失败: {detail}", "data": None},
         headers={"X-Geeker-Code": "400"},
+    )
+
+
+@app.exception_handler(RateLimitExceeded)
+async def rate_limit_exception_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:
+    return JSONResponse(
+        status_code=429,
+        content=make_response(429, data=None, msg="请求过于频繁，请稍后再试"),
+        headers={"X-Geeker-Code": "429"},
     )
 
 

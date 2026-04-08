@@ -3,20 +3,21 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import Boolean, DateTime, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from core.database import Base
+from models.base import SoftDeleteMixin
 
 
-class SysDictType(Base):
+class SysDictType(SoftDeleteMixin, Base):
     """字典类型表"""
 
     __tablename__ = "sys_dict_type"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     dict_name: Mapped[str] = mapped_column(String(128), nullable=False, comment="字典名称")
-    dict_code: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True, comment="字典编码")
+    dict_code: Mapped[str] = mapped_column(String(64), nullable=False, index=True, comment="字典编码")
     status: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     remark: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
@@ -25,11 +26,10 @@ class SysDictType(Base):
     )
 
 
-class SysDictData(Base):
+class SysDictData(SoftDeleteMixin, Base):
     """字典数据表"""
 
     __tablename__ = "sys_dict_data"
-    __table_args__ = (UniqueConstraint("dict_code", "dict_value", name="uq_sys_dict_data_code_value"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     dict_code: Mapped[str] = mapped_column(String(64), nullable=False, index=True, comment="关联字典类型编码")

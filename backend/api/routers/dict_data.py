@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Set
 
 from fastapi import APIRouter, Depends, Header
@@ -27,7 +28,7 @@ def dict_data_by_code(dict_code: str, db: Session = Depends(get_db)) -> Dict[str
     def load() -> List[Dict[str, Any]]:
         rows = (
             db.query(SysDictData)
-            .filter(SysDictData.dict_code == code)
+            .filter(SysDictData.dict_code == code, SysDictData.is_delete == 0)
             .filter(SysDictData.status == True)  # noqa: E712
             .order_by(SysDictData.sort.asc(), SysDictData.id.asc())
             .all()
@@ -53,7 +54,7 @@ def dict_data_list(
     if not code:
         return make_response(500, data={}, msg="dictCode 不能为空")
 
-    q = db.query(SysDictData).filter(SysDictData.dict_code == code)
+    q = db.query(SysDictData).filter(SysDictData.dict_code == code, SysDictData.is_delete == 0)
     if body.dictLabel and body.dictLabel.strip():
         kw = f"%{body.dictLabel.strip()}%"
         q = q.filter(SysDictData.dict_label.like(kw))
@@ -91,9 +92,11 @@ def dict_data_add(
         return make_response(401, data={}, msg="登录过期，请重新登录")
 
     code = body.dictCode.strip()
-    if not db.query(SysDictType).filter(SysDictType.dict_code == code).first():
+    if not db.query(SysDictType).filter(SysDictType.dict_code == code, SysDictType.is_delete == 0).first():
         return make_response(500, data={}, msg="字典类型不存在")
-    if db.query(SysDictData).filter(SysDictData.dict_code == code, SysDictData.dict_value == body.dictValue.strip()).first():
+    if db.query(SysDictData).filter(
+        SysDictData.dict_code == code, SysDictData.dict_value == body.dictValue.strip(), SysDictData.is_delete == 0
+    ).first():
         return make_response(500, data={}, msg="同字典编码下字典值已存在")
 
     db.add(
@@ -122,17 +125,22 @@ def dict_data_edit(
         return make_response(401, data={}, msg="登录过期，请重新登录")
 
     did = int(body.id) if not isinstance(body.id, int) else body.id
-    row = db.query(SysDictData).filter(SysDictData.id == did).first()
+    row = db.query(SysDictData).filter(SysDictData.id == did, SysDictData.is_delete == 0).first()
     if not row:
         return make_response(500, data={}, msg="字典数据不存在")
 
     prev_code = row.dict_code
     code = body.dictCode.strip()
-    if not db.query(SysDictType).filter(SysDictType.dict_code == code).first():
+    if not db.query(SysDictType).filter(SysDictType.dict_code == code, SysDictType.is_delete == 0).first():
         return make_response(500, data={}, msg="字典类型不存在")
     other = (
         db.query(SysDictData)
-        .filter(SysDictData.dict_code == code, SysDictData.dict_value == body.dictValue.strip(), SysDictData.id != did)
+        .filter(
+            SysDictData.dict_code == code,
+            SysDictData.dict_value == body.dictValue.strip(),
+            SysDictData.id != did,
+            SysDictData.is_delete == 0,
+        )
         .first()
     )
     if other:
@@ -165,10 +173,11 @@ def dict_data_delete(
     codes_hit: Set[str] = set()
     for raw in body.id:
         did = int(raw) if not isinstance(raw, int) else raw
-        row = db.query(SysDictData).filter(SysDictData.id == did).first()
+        row = db.query(SysDictData).filter(SysDictData.id == did, SysDictData.is_delete == 0).first()
         if row:
             codes_hit.add(row.dict_code)
-            db.delete(row)
+            row.is_delete = 1
+            row.delete_time = datetime.now()
             deleted += 1
     if not deleted:
         return make_response(500, data={}, msg="字典数据不存在或已删除")
@@ -190,7 +199,7 @@ def dict_data_change_status(
         return make_response(401, data={}, msg="登录过期，请重新登录")
 
     did = int(body.id) if not isinstance(body.id, int) else body.id
-    row = db.query(SysDictData).filter(SysDictData.id == did).first()
+    row = db.query(SysDictData).filter(SysDictData.id == did, SysDictData.is_delete == 0).first()
     if not row:
         return make_response(500, data={}, msg="字典数据不存在")
 
