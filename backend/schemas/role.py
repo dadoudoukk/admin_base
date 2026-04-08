@@ -14,6 +14,8 @@ class RoleAddBody(BaseModel):
     roleName: str = Field(..., min_length=1, description="角色名称")
     roleCode: str = Field(..., min_length=1, description="角色标识")
     remark: Optional[str] = Field(None, description="备注")
+    data_scope: int = Field(2, ge=1, le=5, description="数据权限范围 1-5")
+    custom_dept_ids: List[int] = Field(default_factory=list, description="自定义部门 ID 列表（data_scope=5 生效）")
 
 
 class RoleEditBody(BaseModel):
@@ -21,6 +23,8 @@ class RoleEditBody(BaseModel):
     roleName: str = Field(..., min_length=1)
     roleCode: str = Field(..., min_length=1)
     remark: Optional[str] = Field(None, description="备注")
+    data_scope: int = Field(2, ge=1, le=5, description="数据权限范围 1-5")
+    custom_dept_ids: List[int] = Field(default_factory=list, description="自定义部门 ID 列表（data_scope=5 生效）")
 
 
 class RoleDeleteBody(BaseModel):

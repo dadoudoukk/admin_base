@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from enum import IntEnum
 from typing import List, Optional
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
@@ -8,6 +9,17 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from core.database import Base
 from models.base import SoftDeleteMixin
+from models.system import SysDept
+
+
+class DataScopeEnum(IntEnum):
+    """角色数据范围：数值越小权限面越宽；多角色时取最小值作为用户有效范围。"""
+
+    ALL = 1  # 全部数据
+    DEPT_AND_CHILD = 2  # 本部门及以下
+    DEPT_ONLY = 3  # 本部门
+    SELF_ONLY = 4  # 仅本人
+    CUSTOM_DEPTS = 5  # 自定义部门（见 sys_role_dept）
 
 
 class SysUserRole(Base):
@@ -46,6 +58,12 @@ class SysUser(SoftDeleteMixin, Base):
     __tablename__ = "sys_user"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    dept_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("sys_dept.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+        comment="归属部门，用于数据权限",
+    )
     username: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     password: Mapped[str] = mapped_column(String(128), nullable=False, comment="建议保存加盐哈希")
     nickname: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
@@ -67,6 +85,24 @@ class SysUser(SoftDeleteMixin, Base):
         back_populates="users",
         lazy="selectin",
     )
+    dept: Mapped[Optional[SysDept]] = relationship()
+
+
+class SysRoleDept(Base):
+    """
+    角色-部门：data_scope=自定义部门 时，指定该角色可访问的部门 ID 列表。
+    """
+
+    __tablename__ = "sys_role_dept"
+    __table_args__ = (UniqueConstraint("role_id", "dept_id", name="uq_sys_role_dept_role_dept"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    role_id: Mapped[int] = mapped_column(ForeignKey("sys_role.id", ondelete="CASCADE"), nullable=False, index=True)
+    dept_id: Mapped[int] = mapped_column(ForeignKey("sys_dept.id", ondelete="CASCADE"), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+    role: Mapped["SysRole"] = relationship(back_populates="role_dept_associations")
+    dept: Mapped[SysDept] = relationship()
 
 
 class SysRole(SoftDeleteMixin, Base):
@@ -80,6 +116,12 @@ class SysRole(SoftDeleteMixin, Base):
     name: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     code: Mapped[str] = mapped_column(String(64), nullable=False, index=True, comment="例如 admin/editor")
     description: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    data_scope: Mapped[int] = mapped_column(
+        Integer,
+        default=DataScopeEnum.ALL.value,
+        nullable=False,
+        comment="1全部 2本部门及以下 3本部门 4仅本人 5自定义部门",
+    )
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
@@ -97,6 +139,11 @@ class SysRole(SoftDeleteMixin, Base):
     menus: Mapped[List["SysMenu"]] = relationship(
         secondary="sys_role_menu",
         back_populates="roles",
+        lazy="selectin",
+    )
+    role_dept_associations: Mapped[List[SysRoleDept]] = relationship(
+        back_populates="role",
+        cascade="all, delete-orphan",
         lazy="selectin",
     )
 

@@ -12,7 +12,7 @@ from api.deps import (
     require_user,
 )
 from api.helpers import role_row
-from models import SysRole, SysRoleMenu, SysUserRole
+from models import SysDept, SysRole, SysRoleDept, SysRoleMenu, SysUserRole
 from schemas.role import (
     RoleAddBody,
     RoleAssignMenuBody,
@@ -23,6 +23,40 @@ from schemas.role import (
 )
 
 router = APIRouter(prefix="/role", tags=["角色管理"])
+
+
+def _sync_role_custom_depts(db: Session, role_id: int, data_scope: int, custom_dept_ids: list[int]) -> None:
+    """
+    同步角色-部门关联：
+    - data_scope != 5：清空关联
+    - data_scope == 5：按传入列表重建关联（去重 + 仅保留存在部门）
+    """
+    db.query(SysRoleDept).filter(SysRoleDept.role_id == role_id).delete(synchronize_session=False)
+    if int(data_scope) != 5:
+        return
+    unique_ids = list(dict.fromkeys(int(x) for x in (custom_dept_ids or [])))
+    if not unique_ids:
+        return
+    dept_ids = db.query(SysDept.id).filter(SysDept.id.in_(unique_ids), SysDept.is_delete == 0).all()
+    valid_ids = [int(x[0]) for x in dept_ids]
+    for did in valid_ids:
+        db.add(SysRoleDept(role_id=role_id, dept_id=did))
+
+
+def _build_dept_tree(db: Session) -> list[dict]:
+    rows = db.query(SysDept).filter(SysDept.is_delete == 0, SysDept.status == 1).order_by(SysDept.sort.asc(), SysDept.id.asc()).all()
+    node_map: dict[int, dict] = {
+        int(d.id): {"id": int(d.id), "label": d.name, "children": []} for d in rows
+    }
+    roots: list[dict] = []
+    for d in rows:
+        pid = d.parent_id
+        cur = node_map[int(d.id)]
+        if pid is not None and int(pid) in node_map:
+            node_map[int(pid)]["children"].append(cur)
+        else:
+            roots.append(cur)
+    return roots
 
 
 @router.post("/list")
@@ -89,14 +123,22 @@ def role_add(
     if db.query(SysRole).filter(SysRole.name == name, SysRole.is_delete == 0).first():
         return make_response(500, data={}, msg="角色名称已存在")
 
-    r = SysRole(
-        name=name,
-        code=code,
-        description=body.remark,
-        is_active=True,
-    )
-    db.add(r)
-    db.commit()
+    try:
+        r = SysRole(
+            name=name,
+            code=code,
+            description=body.remark,
+            data_scope=int(body.data_scope),
+            is_active=True,
+        )
+        db.add(r)
+        db.flush()
+        _sync_role_custom_depts(db, r.id, int(body.data_scope), body.custom_dept_ids)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    invalidate_all_user_perms_caches()
     return make_response(200, data={}, msg="新增成功")
 
 
@@ -132,10 +174,19 @@ def role_edit(
             return make_response(500, data={}, msg="角色标识已存在")
         r.code = code
 
-    if body.remark is not None:
-        r.description = body.remark
+    if rid == 1 and int(body.data_scope) != int(r.data_scope):
+        return make_response(403, data={}, msg="禁止修改超级管理员的数据权限范围")
 
-    db.commit()
+    try:
+        if body.remark is not None:
+            r.description = body.remark
+        r.data_scope = int(body.data_scope)
+        _sync_role_custom_depts(db, rid, int(body.data_scope), body.custom_dept_ids)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    invalidate_all_user_perms_caches()
     return make_response(200, data={}, msg="编辑成功")
 
 
@@ -189,6 +240,17 @@ def role_get_menu_ids(
 
     ids = [m.id for m in role.menus]
     return make_response(200, data=ids, msg="success")
+
+
+@router.get("/deptTree")
+def role_dept_tree(
+    db: Session = Depends(get_db),
+    x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
+) -> Dict[str, Any]:
+    ctx = require_user(x_access_token)
+    if not ctx:
+        return make_response(401, data=[], msg="登录过期，请重新登录")
+    return make_response(200, data=_build_dept_tree(db), msg="success")
 
 
 @router.post("/assignMenu", dependencies=[Depends(require_permission("role:auth"))])

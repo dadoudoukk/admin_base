@@ -1,4 +1,4 @@
-import { ResPage } from "@/api/interface/index";
+import { ResPage, Role } from "@/api/interface/index";
 import { PORT1 } from "@/api/config/servicePort";
 import http from "@/api";
 
@@ -8,6 +8,8 @@ export interface RoleRow {
   roleName: string;
   roleCode: string;
   remark: string;
+  data_scope: number;
+  custom_dept_ids: number[];
   status: number;
   createTime: string;
 }
@@ -35,11 +37,11 @@ export const getAllRoleList = () => {
   return http.get<RoleOption[]>(PORT1 + `/role/all`);
 };
 
-export const addRole = (params: { roleName: string; roleCode: string; remark?: string }) => {
+export const addRole = (params: Role.ReqRoleSubmit) => {
   return http.post(PORT1 + `/role/add`, params);
 };
 
-export const editRole = (params: { id: string; roleName: string; roleCode: string; remark?: string }) => {
+export const editRole = (params: Role.ReqRoleSubmit) => {
   return http.post(PORT1 + `/role/edit`, params);
 };
 
@@ -60,4 +62,9 @@ export const getRoleMenuIds = (params: { roleId: string | number }) => {
 /** 保存角色菜单关联 */
 export const assignRoleMenus = (params: { roleId: string | number; menuIds: number[] }) => {
   return http.post(PORT1 + `/role/assignMenu`, params);
+};
+
+/** 部门树（数据权限-自定义部门） */
+export const getRoleDeptTree = () => {
+  return http.get<Role.ResDeptTreeNode[]>(PORT1 + `/role/deptTree`);
 };

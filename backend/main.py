@@ -15,6 +15,7 @@ from api.api_router import router as core_router
 from api.deps import make_response
 from api.oper_log import client_ip, flush_oper_log_background, resolve_oper_log_status
 from core.config import get_settings
+from core.context import begin_data_permission_context_scope, clear_data_permission_context
 from core.limiter import limiter
 from core.paths import UPLOAD_DIR
 from slowapi.errors import RateLimitExceeded
@@ -26,6 +27,15 @@ _settings = get_settings()
 app = FastAPI(title="Geeker-Admin FastAPI Auth Center")
 app.state.limiter = limiter
 app.add_middleware(SlowAPIMiddleware)
+
+
+@app.middleware("http")
+async def clear_data_permission_context_middleware(request: Request, call_next):
+    tokens = begin_data_permission_context_scope()
+    try:
+        return await call_next(request)
+    finally:
+        clear_data_permission_context(tokens)
 
 
 def _validation_error_message(exc: RequestValidationError) -> str:

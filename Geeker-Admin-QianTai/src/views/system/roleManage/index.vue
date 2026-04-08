@@ -24,7 +24,7 @@
     <el-dialog
       v-model="dialogVisible"
       :title="isEdit ? '编辑角色' : '新增角色'"
-      width="480px"
+      width="620px"
       destroy-on-close
       @closed="resetForm"
     >
@@ -42,6 +42,31 @@
         </el-form-item>
         <el-form-item label="备注" prop="remark">
           <el-input v-model="form.remark" type="textarea" :rows="3" placeholder="选填" clearable />
+        </el-form-item>
+        <el-form-item label="数据权限" prop="data_scope">
+          <el-select v-model="form.data_scope" class="w-full" placeholder="请选择数据权限">
+            <el-option :value="1" label="全部数据" />
+            <el-option :value="2" label="本部门及以下数据" />
+            <el-option :value="3" label="本部门数据" />
+            <el-option :value="4" label="仅本人数据" />
+            <el-option :value="5" label="自定义部门数据" />
+          </el-select>
+        </el-form-item>
+        <el-form-item v-if="form.data_scope === 5" label="可见部门" prop="custom_dept_ids">
+          <el-tree-select
+            v-model="form.custom_dept_ids"
+            class="w-full"
+            node-key="id"
+            :data="deptTreeData"
+            :props="{ label: 'label', children: 'children' }"
+            multiple
+            show-checkbox
+            check-strictly
+            check-on-click-node
+            collapse-tags
+            collapse-tags-tooltip
+            placeholder="请选择可见部门（可多选）"
+          />
         </el-form-item>
       </el-form>
       <template #footer>
@@ -87,6 +112,7 @@ import {
   getMenuAllTree,
   getRoleMenuIds,
   assignRoleMenus,
+  getRoleDeptTree,
   type RoleRow
 } from "@/api/modules/role";
 import { useHandleData } from "@/hooks/useHandleData";
@@ -99,7 +125,9 @@ const form = reactive({
   id: "",
   roleName: "",
   roleCode: "",
-  remark: ""
+  remark: "",
+  data_scope: 2,
+  custom_dept_ids: [] as number[]
 });
 
 const authDrawerVisible = ref(false);
@@ -109,10 +137,24 @@ const authLoading = ref(false);
 const authSaving = ref(false);
 const treeData = ref<any[]>([]);
 const treeRef = ref<InstanceType<typeof ElTree>>();
+const deptTreeData = ref<any[]>([]);
 
 const rules: FormRules = {
   roleName: [{ required: true, message: "请输入角色名称", trigger: "blur" }],
-  roleCode: [{ required: true, message: "请输入角色标识", trigger: "blur" }]
+  roleCode: [{ required: true, message: "请输入角色标识", trigger: "blur" }],
+  data_scope: [{ required: true, message: "请选择数据权限", trigger: "change" }],
+  custom_dept_ids: [
+    {
+      validator: (_rule, value: number[], callback) => {
+        if (form.data_scope === 5 && (!value || value.length === 0)) {
+          callback(new Error("请选择至少一个部门"));
+          return;
+        }
+        callback();
+      },
+      trigger: "change"
+    }
+  ]
 };
 
 const dataCallback = (data: any) => ({
@@ -122,17 +164,27 @@ const dataCallback = (data: any) => ({
 
 const getTableList = (params: any) => getRoleList(JSON.parse(JSON.stringify(params)));
 
-const openAdd = () => {
+const ensureDeptTreeLoaded = async () => {
+  if (deptTreeData.value.length) return;
+  const res = await getRoleDeptTree();
+  deptTreeData.value = (res as any).data ?? [];
+};
+
+const openAdd = async () => {
   isEdit.value = false;
+  await ensureDeptTreeLoaded();
   dialogVisible.value = true;
 };
 
-const openEdit = (row: RoleRow) => {
+const openEdit = async (row: RoleRow) => {
   isEdit.value = true;
+  await ensureDeptTreeLoaded();
   form.id = row.id;
   form.roleName = row.roleName;
   form.roleCode = row.roleCode;
   form.remark = row.remark || "";
+  form.data_scope = Number(row.data_scope || 2);
+  form.custom_dept_ids = Array.isArray(row.custom_dept_ids) ? row.custom_dept_ids.map(id => Number(id)) : [];
   dialogVisible.value = true;
 };
 
@@ -141,6 +193,8 @@ const resetForm = () => {
   form.roleName = "";
   form.roleCode = "";
   form.remark = "";
+  form.data_scope = 2;
+  form.custom_dept_ids = [];
   isEdit.value = false;
   formRef.value?.clearValidate();
 };
@@ -154,14 +208,18 @@ const submitForm = () => {
           id: form.id,
           roleName: form.roleName.trim(),
           roleCode: form.roleCode.trim(),
-          remark: form.remark
+          remark: form.remark,
+          data_scope: Number(form.data_scope),
+          custom_dept_ids: form.data_scope === 5 ? form.custom_dept_ids : []
         });
         ElMessage.success({ message: res.msg || "编辑成功" });
       } else {
         const res = await addRole({
           roleName: form.roleName.trim(),
           roleCode: form.roleCode.trim(),
-          remark: form.remark || undefined
+          remark: form.remark || undefined,
+          data_scope: Number(form.data_scope),
+          custom_dept_ids: form.data_scope === 5 ? form.custom_dept_ids : []
         });
         ElMessage.success({ message: res.msg || "新增成功" });
       }
@@ -243,6 +301,20 @@ const columns = reactive<ColumnProps<RoleRow>[]>([
     prop: "remark",
     label: "备注",
     minWidth: 160
+  },
+  {
+    prop: "data_scope",
+    label: "数据权限",
+    tag: true,
+    search: { el: "select", props: { filterable: true } },
+    enum: [
+      { label: "全部数据", value: 1, tagType: "danger" },
+      { label: "本部门及以下", value: 2, tagType: "primary" },
+      { label: "本部门数据", value: 3, tagType: "success" },
+      { label: "仅本人数据", value: 4, tagType: "info" },
+      { label: "自定义数据", value: 5, tagType: "warning" }
+    ],
+    width: 140
   },
   {
     prop: "createTime",

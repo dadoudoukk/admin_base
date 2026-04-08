@@ -358,11 +358,14 @@ def build_sys_log_export_query(
 
 def role_row(r: SysRole) -> Dict[str, Any]:
     created = r.created_at.strftime("%Y-%m-%d %H:%M:%S") if r.created_at else ""
+    custom_dept_ids = [int(x.dept_id) for x in (r.role_dept_associations or [])] if int(r.data_scope) == 5 else []
     return {
         "id": str(r.id),
         "roleName": r.name,
         "roleCode": r.code,
         "remark": r.description or "",
+        "data_scope": int(r.data_scope),
+        "custom_dept_ids": custom_dept_ids,
         "status": 1 if r.is_active else 0,
         "createTime": created,
     }

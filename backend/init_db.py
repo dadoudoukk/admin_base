@@ -25,8 +25,10 @@ from sqlalchemy.orm import Session
 # 导入模型，确保 metadata 完整
 from models import (  # noqa: F401
     BizFragmentCategory,
+    BizFragmentContent,
     BizNewsArticle,
     BizNewsCategory,
+    SysDept,
     SysDictData,
     SysDictType,
     SysMenu,
@@ -35,7 +37,7 @@ from models import (  # noqa: F401
     SysUser,
 )
 
-from core.database import Base, SessionLocal, engine
+from core.database import Base, SessionLocal, engine, DATABASE_URL
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -62,6 +64,101 @@ def ensure_biz_news_article_cover_image_column() -> None:
             )
         )
     print("已为 biz_news_article 表补充 cover_image_url 字段（旧库升级）。")
+
+
+def _add_column_if_absent(table: str, column: str, sqlite_sql: str, mysql_sql: str) -> None:
+    """旧库缺列时执行 ALTER（SQLite / MySQL 各一条 DDL）。"""
+    from sqlalchemy import inspect, text
+
+    try:
+        insp = inspect(engine)
+        cols = [c["name"] for c in insp.get_columns(table)]
+    except Exception:
+        return
+    if column in cols:
+        return
+    sql = sqlite_sql if DATABASE_URL.startswith("sqlite") else mysql_sql
+    with engine.begin() as conn:
+        conn.execute(text(sql))
+    print(f"已为 {table} 表补充 {column} 字段（旧库升级）。")
+
+
+def ensure_sys_user_dept_id_column() -> None:
+    _add_column_if_absent(
+        "sys_user",
+        "dept_id",
+        "ALTER TABLE sys_user ADD COLUMN dept_id INTEGER NULL",
+        "ALTER TABLE sys_user ADD COLUMN dept_id INT NULL COMMENT '归属部门'",
+    )
+
+
+def ensure_sys_role_data_scope_column() -> None:
+    _add_column_if_absent(
+        "sys_role",
+        "data_scope",
+        "ALTER TABLE sys_role ADD COLUMN data_scope INTEGER NOT NULL DEFAULT 1",
+        "ALTER TABLE sys_role ADD COLUMN data_scope INT NOT NULL DEFAULT 1 COMMENT '数据范围 1-5'",
+    )
+
+
+def ensure_biz_news_category_data_perm_columns() -> None:
+    _add_column_if_absent(
+        "biz_news_category",
+        "dept_id",
+        "ALTER TABLE biz_news_category ADD COLUMN dept_id INTEGER NULL",
+        "ALTER TABLE biz_news_category ADD COLUMN dept_id INT NULL COMMENT '归属部门'",
+    )
+    _add_column_if_absent(
+        "biz_news_category",
+        "created_by",
+        "ALTER TABLE biz_news_category ADD COLUMN created_by INTEGER NULL",
+        "ALTER TABLE biz_news_category ADD COLUMN created_by INT NULL COMMENT '创建人'",
+    )
+
+
+def ensure_biz_news_article_data_perm_columns() -> None:
+    _add_column_if_absent(
+        "biz_news_article",
+        "dept_id",
+        "ALTER TABLE biz_news_article ADD COLUMN dept_id INTEGER NULL",
+        "ALTER TABLE biz_news_article ADD COLUMN dept_id INT NULL COMMENT '归属部门'",
+    )
+    _add_column_if_absent(
+        "biz_news_article",
+        "created_by",
+        "ALTER TABLE biz_news_article ADD COLUMN created_by INTEGER NULL",
+        "ALTER TABLE biz_news_article ADD COLUMN created_by INT NULL COMMENT '创建人'",
+    )
+
+
+def ensure_biz_fragment_category_data_perm_columns() -> None:
+    _add_column_if_absent(
+        "biz_fragment_category",
+        "dept_id",
+        "ALTER TABLE biz_fragment_category ADD COLUMN dept_id INTEGER NULL",
+        "ALTER TABLE biz_fragment_category ADD COLUMN dept_id INT NULL COMMENT '归属部门'",
+    )
+    _add_column_if_absent(
+        "biz_fragment_category",
+        "created_by",
+        "ALTER TABLE biz_fragment_category ADD COLUMN created_by INTEGER NULL",
+        "ALTER TABLE biz_fragment_category ADD COLUMN created_by INT NULL COMMENT '创建人'",
+    )
+
+
+def ensure_biz_fragment_content_data_perm_columns() -> None:
+    _add_column_if_absent(
+        "biz_fragment_content",
+        "dept_id",
+        "ALTER TABLE biz_fragment_content ADD COLUMN dept_id INTEGER NULL",
+        "ALTER TABLE biz_fragment_content ADD COLUMN dept_id INT NULL COMMENT '归属部门'",
+    )
+    _add_column_if_absent(
+        "biz_fragment_content",
+        "created_by",
+        "ALTER TABLE biz_fragment_content ADD COLUMN created_by INTEGER NULL",
+        "ALTER TABLE biz_fragment_content ADD COLUMN created_by INT NULL COMMENT '创建人'",
+    )
 
 
 def ensure_sys_oper_log_request_param_column() -> None:
@@ -632,11 +729,42 @@ def ensure_news_article_init(session: Session) -> None:
     print("新闻文章初始化数据已写入。")
 
 
+def ensure_root_department_and_backfill(session: Session) -> None:
+    """默认根部门「总公司」，admin 归属该部门，并回填业务表空的 dept_id / created_by。"""
+    root = session.query(SysDept).filter(SysDept.name == "总公司", SysDept.is_delete == 0).first()
+    if not root:
+        root = SysDept(parent_id=None, name="总公司", sort=0, status=1, remark="数据权限默认根部门")
+        session.add(root)
+        session.flush()
+
+    admin = session.query(SysUser).filter(SysUser.username == "admin").first()
+    if admin and admin.dept_id is None:
+        admin.dept_id = root.id
+
+    aid = admin.id if admin else None
+    did = root.id
+    if aid and did:
+        for model in (BizNewsCategory, BizNewsArticle, BizFragmentCategory, BizFragmentContent):
+            for row in session.query(model).all():
+                if getattr(row, "dept_id", None) is None:
+                    row.dept_id = did
+                if getattr(row, "created_by", None) is None:
+                    row.created_by = aid
+    session.commit()
+    print("已检查默认部门「总公司」、admin 部门归属及业务表数据权限字段回填。")
+
+
 def main() -> None:
     ensure_tables()
     ensure_user_gender_column()
     ensure_biz_news_article_cover_image_column()
     ensure_sys_oper_log_request_param_column()
+    ensure_sys_user_dept_id_column()
+    ensure_sys_role_data_scope_column()
+    ensure_biz_news_category_data_perm_columns()
+    ensure_biz_news_article_data_perm_columns()
+    ensure_biz_fragment_category_data_perm_columns()
+    ensure_biz_fragment_content_data_perm_columns()
     session = SessionLocal()
     try:
         seed(session)
@@ -656,6 +784,7 @@ def main() -> None:
         ensure_dict_news_button_menus(session)
         ensure_role_button_menus(session)
         ensure_fragment_button_menus(session)
+        ensure_root_department_and_backfill(session)
     except Exception:
         session.rollback()
         raise

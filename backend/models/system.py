@@ -1,13 +1,40 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
+from typing import List, Optional
 
-from sqlalchemy import DateTime, Integer, String, Text
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from core.database import Base
 from models.base import SoftDeleteMixin
+
+
+class SysDept(SoftDeleteMixin, Base):
+    """部门表（树形，parent_id 指向父部门）。"""
+
+    __tablename__ = "sys_dept"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    parent_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("sys_dept.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+        comment="父部门 ID，根部门为 NULL",
+    )
+    name: Mapped[str] = mapped_column(String(64), nullable=False, comment="部门名称")
+    sort: Mapped[int] = mapped_column(Integer, default=0, nullable=False, comment="排序")
+    status: Mapped[int] = mapped_column(Integer, default=1, nullable=False, comment="0停用 1正常")
+    remark: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, comment="备注")
+    create_time: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+    parent: Mapped[Optional["SysDept"]] = relationship(
+        remote_side="SysDept.id",
+        back_populates="children",
+    )
+    children: Mapped[List["SysDept"]] = relationship(
+        back_populates="parent",
+    )
 
 
 class SysOperLog(SoftDeleteMixin, Base):

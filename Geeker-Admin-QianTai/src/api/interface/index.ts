@@ -97,3 +97,21 @@ export namespace User {
     children?: ResDepartment[];
   }
 }
+
+// 角色管理模块
+export namespace Role {
+  export interface ReqRoleSubmit {
+    id?: string;
+    roleName: string;
+    roleCode: string;
+    remark?: string;
+    data_scope: number;
+    custom_dept_ids: number[];
+  }
+
+  export interface ResDeptTreeNode {
+    id: number;
+    label: string;
+    children?: ResDeptTreeNode[];
+  }
+}

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import DateTime, Integer, String, Text
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from core.database import Base
@@ -16,6 +16,18 @@ class BizNewsCategory(SoftDeleteMixin, Base):
     __tablename__ = "biz_news_category"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    dept_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("sys_dept.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+        comment="归属部门（数据权限）",
+    )
+    created_by: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("sys_user.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+        comment="创建人（数据权限-仅本人）",
+    )
     category_name: Mapped[str] = mapped_column(String(128), nullable=False, index=True, comment="分类名称")
     sort: Mapped[int] = mapped_column(Integer, default=0, nullable=False, comment="排序")
     status: Mapped[int] = mapped_column(Integer, default=1, nullable=False, comment="状态：0停用 1启用")
@@ -29,6 +41,18 @@ class BizNewsArticle(SoftDeleteMixin, Base):
     __tablename__ = "biz_news_article"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    dept_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("sys_dept.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+        comment="归属部门（数据权限）",
+    )
+    created_by: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("sys_user.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+        comment="创建人（数据权限-仅本人）",
+    )
     category_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True, comment="分类ID")
     title: Mapped[str] = mapped_column(String(255), nullable=False, index=True, comment="新闻标题")
     author: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, comment="作者")
@@ -47,6 +71,18 @@ class BizFragmentCategory(SoftDeleteMixin, Base):
     __tablename__ = "biz_fragment_category"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    dept_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("sys_dept.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+        comment="归属部门（数据权限）",
+    )
+    created_by: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("sys_user.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+        comment="创建人（数据权限-仅本人）",
+    )
     code: Mapped[str] = mapped_column(String(64), nullable=False, index=True, comment="标识码，如 home_banner")
     name: Mapped[str] = mapped_column(String(128), nullable=False, comment="位置名称")
     remark: Mapped[Optional[str]] = mapped_column(Text, nullable=True, comment="备注")
@@ -59,6 +95,18 @@ class BizFragmentContent(SoftDeleteMixin, Base):
     __tablename__ = "biz_fragment_content"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    dept_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("sys_dept.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+        comment="归属部门（数据权限）",
+    )
+    created_by: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("sys_user.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+        comment="创建人（数据权限-仅本人）",
+    )
     category_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True, comment="碎片位置 ID")
     title: Mapped[str] = mapped_column(String(255), nullable=False, comment="标题")
     image_url: Mapped[Optional[str]] = mapped_column(String(512), nullable=True, comment="图片链接")
