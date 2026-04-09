@@ -33,6 +33,7 @@ from models import (  # noqa: F401
     SysDictData,
     SysDictType,
     SysMenu,
+    SysApi,
     SysOperLog,
     SysRole,
     SysUser,
@@ -201,6 +202,34 @@ def ensure_user_gender_column() -> None:
     print("已为 sys_user 表补充 gender 字段（旧库升级）。")
 
 
+def ensure_sys_api_extra_columns() -> None:
+    """兼容旧表缺少的 sys_api 字段。"""
+    _add_column_if_absent(
+        "sys_api",
+        "auth_required",
+        "ALTER TABLE sys_api ADD COLUMN auth_required BOOLEAN NOT NULL DEFAULT 1",
+        "ALTER TABLE sys_api ADD COLUMN auth_required TINYINT(1) NOT NULL DEFAULT 1 COMMENT '是否鉴权'",
+    )
+    _add_column_if_absent(
+        "sys_api",
+        "log_required",
+        "ALTER TABLE sys_api ADD COLUMN log_required BOOLEAN NOT NULL DEFAULT 0",
+        "ALTER TABLE sys_api ADD COLUMN log_required TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否记录日志'",
+    )
+    _add_column_if_absent(
+        "sys_api",
+        "rate_limit",
+        "ALTER TABLE sys_api ADD COLUMN rate_limit INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE sys_api ADD COLUMN rate_limit INT NOT NULL DEFAULT 0 COMMENT '限流QPS'",
+    )
+    _add_column_if_absent(
+        "sys_api",
+        "update_time",
+        "ALTER TABLE sys_api ADD COLUMN update_time DATETIME NULL",
+        "ALTER TABLE sys_api ADD COLUMN update_time DATETIME NULL COMMENT '更新时间'",
+    )
+
+
 def seed(session: Session) -> None:
     if session.query(SysUser).filter(SysUser.username == "admin").first():
         print("已存在用户 admin，跳过写入（避免重复）。")
@@ -367,6 +396,34 @@ def ensure_system_log_menu(session: Session) -> None:
         role.menus.append(child)
     session.commit()
     print("已检查「系统管理 -> 操作日志」菜单并关联超级管理员角色。")
+
+
+def ensure_api_manage_menu(session: Session) -> None:
+    """在「系统管理」下挂「接口管理」并授权 admin。"""
+    parent = session.query(SysMenu).filter(SysMenu.name == "system").first()
+    if not parent:
+        print("未找到「系统管理」菜单，跳过接口管理菜单补充。")
+        return
+    child = session.query(SysMenu).filter(SysMenu.name == "apiManage").first()
+    if not child:
+        child = SysMenu(
+            parent_id=parent.id,
+            menu_type="MENU",
+            name="apiManage",
+            title="接口管理",
+            path="/system/apiManage",
+            component="/system/apiManage/index",
+            icon="Connection",
+            sort=6,
+        )
+        session.add(child)
+        session.flush()
+
+    role = session.query(SysRole).filter(SysRole.code == "admin").first()
+    if role and child not in role.menus:
+        role.menus.append(child)
+    session.commit()
+    print("已检查「系统管理 -> 接口管理」菜单并关联超级管理员角色。")
 
 
 def ensure_button_menus_under_parent(
@@ -768,6 +825,7 @@ async def main() -> None:
     ensure_biz_news_article_data_perm_columns()
     ensure_biz_fragment_category_data_perm_columns()
     ensure_biz_fragment_content_data_perm_columns()
+    ensure_sys_api_extra_columns()
     async with AsyncSessionLocal() as session:
         try:
             await session.run_sync(seed)
@@ -775,6 +833,7 @@ async def main() -> None:
             await session.run_sync(ensure_role_manage_menu)
             await session.run_sync(ensure_menu_manage_menu)
             await session.run_sync(ensure_system_log_menu)
+            await session.run_sync(ensure_api_manage_menu)
             await session.run_sync(ensure_dict_manage_menu)
             await session.run_sync(ensure_sys_dict_init)
             await session.run_sync(ensure_news_center_menu)

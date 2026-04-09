@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import List, Optional
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from core.database import Base
@@ -52,3 +52,28 @@ class SysOperLog(SoftDeleteMixin, Base):
     error_msg: Mapped[Optional[str]] = mapped_column(Text, nullable=True, comment="错误信息")
     request_param: Mapped[Optional[str]] = mapped_column(Text, nullable=True, comment="请求参数")
     create_time: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False, comment="记录时间")
+
+
+class SysApi(SoftDeleteMixin, Base):
+    """系统接口管控配置"""
+
+    __tablename__ = "sys_api"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    api_path: Mapped[str] = mapped_column(String(512), nullable=False, index=True, comment="接口路径")
+    api_method: Mapped[str] = mapped_column(String(16), nullable=False, comment="请求方式")
+    api_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, comment="接口名称")
+    api_module: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, comment="所属模块")
+    status: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, comment="是否启用")
+    auth_required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, comment="是否鉴权")
+    log_required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, comment="是否记录日志")
+    rate_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=0, comment="限流QPS，0不限流")
+    remark: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, comment="备注")
+    create_time: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False, comment="创建时间")
+    update_time: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+        comment="更新时间",
+    )

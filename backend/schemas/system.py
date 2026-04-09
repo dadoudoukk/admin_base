@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, Union
 
 from pydantic import BaseModel, Field
 
@@ -20,3 +20,55 @@ class SysOperLogExportBody(BaseModel):
     requestMethod: Optional[str] = Field(None, description="请求方式，如 POST")
     startTime: Optional[str] = Field(None, description="开始时间，格式 YYYY-MM-DD HH:mm:ss")
     endTime: Optional[str] = Field(None, description="结束时间，格式 YYYY-MM-DD HH:mm:ss")
+
+
+class SysApiListBody(BaseModel):
+    pageNum: int = Field(1, ge=1, description="当前页码")
+    pageSize: int = Field(10, ge=1, le=200, description="每页条数")
+    apiPath: Optional[str] = Field(None, description="接口路径模糊搜索")
+    apiMethod: Optional[str] = Field(None, description="请求方式")
+    apiModule: Optional[str] = Field(None, description="所属模块")
+
+
+class SysApiCreateBody(BaseModel):
+    api_path: str = Field(..., min_length=1, description="接口路径")
+    api_method: str = Field(..., min_length=1, description="请求方式")
+    api_name: Optional[str] = Field(None, description="接口名称")
+    api_module: Optional[str] = Field(None, description="所属模块")
+    status: bool = Field(True, description="是否启用")
+    auth_required: bool = Field(True, description="是否鉴权")
+    log_required: bool = Field(False, description="是否记录日志")
+    rate_limit: int = Field(0, ge=0, description="限流QPS，0不限流")
+    remark: Optional[str] = Field(None, description="备注")
+
+
+class SysApiUpdateBody(BaseModel):
+    id: Union[str, int] = Field(..., description="接口配置ID")
+    api_name: Optional[str] = Field(None, description="接口名称")
+    api_module: Optional[str] = Field(None, description="所属模块")
+    status: Optional[bool] = Field(None, description="是否启用")
+    auth_required: Optional[bool] = Field(None, description="是否鉴权")
+    log_required: Optional[bool] = Field(None, description="是否记录日志")
+    rate_limit: Optional[int] = Field(None, ge=0, description="限流QPS，0不限流")
+    remark: Optional[str] = Field(None, description="备注")
+
+
+class SysApiChangeStatusBody(BaseModel):
+    id: Union[str, int] = Field(..., description="接口配置ID")
+    field: str = Field(..., description="开关字段 status/auth_required/log_required")
+    value: Union[bool, int] = Field(..., description="开关值 true/false 或 1/0")
+
+
+class SysApiResponse(BaseModel):
+    id: Union[str, int]
+    apiPath: str
+    apiMethod: str
+    apiName: str
+    apiModule: str
+    status: int
+    authRequired: int
+    logRequired: int
+    rateLimit: int
+    remark: str
+    createTime: str
+    updateTime: str

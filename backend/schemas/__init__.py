@@ -40,7 +40,16 @@ from schemas.role import (
     RoleListBody,
     RoleMenuIdsBody,
 )
-from schemas.system import LoginBody, SysOperLogExportBody, SysOperLogListBody
+from schemas.system import (
+    LoginBody,
+    SysApiChangeStatusBody,
+    SysApiCreateBody,
+    SysApiListBody,
+    SysApiUpdateBody,
+    SysApiResponse,
+    SysOperLogExportBody,
+    SysOperLogListBody,
+)
 from schemas.user import (
     UserAddBody,
     UserChangePasswordBody,
@@ -101,4 +110,9 @@ __all__ = [
     "FragmentContentChangeStatusBody",
     "SysOperLogListBody",
     "SysOperLogExportBody",
+    "SysApiListBody",
+    "SysApiCreateBody",
+    "SysApiUpdateBody",
+    "SysApiChangeStatusBody",
+    "SysApiResponse",
 ]

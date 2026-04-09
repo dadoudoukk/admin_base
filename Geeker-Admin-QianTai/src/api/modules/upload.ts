@@ -5,7 +5,7 @@ import http from "@/api";
 /**
  * @name 文件上传模块
  */
-// 图片上传（与后端 POST /geeker/file/upload 一致，multipart 字段名 file）
+// 图片上传（与后端 POST /api/file/upload 一致，multipart 字段名 file）
 export const uploadImg = (params: FormData) => {
   return http.post<Upload.ResFileUrl>(PORT1 + `/file/upload`, params, { cancel: false });
 };

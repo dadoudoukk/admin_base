@@ -27,7 +27,7 @@ export interface ReqRoleList {
 }
 
 /**
- * @name 角色管理（与 FastAPI /geeker|/api/role/* 对齐）
+ * @name 角色管理（与 FastAPI /api/role/* 对齐）
  */
 export const getRoleList = (params: ReqRoleList) => {
   return http.post<ResPage<RoleRow>>(PORT1 + `/role/list`, params);

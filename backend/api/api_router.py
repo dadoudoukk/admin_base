@@ -8,6 +8,7 @@ from api.routers import (
     dict_type,
     menu,
     role,
+    sys_api,
     sys_log,
     upload,
     user,
@@ -23,4 +24,5 @@ router.include_router(dict_data.router)
 router.include_router(biz_news.router)
 router.include_router(biz_fragment.router)
 router.include_router(sys_log.router)
+router.include_router(sys_api.router)
 router.include_router(upload.router)

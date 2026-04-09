@@ -4,7 +4,7 @@ import http from "@/api";
 
 /**
  * @name 用户管理模块
- * 列表接口：FastAPI 同路径注册在 PORT1（/geeker/user/list）与 /api/user/list
+ * 列表接口：FastAPI 前缀为 /api（与 VITE_API_URL + PORT1 拼接一致）
  */
 // 获取用户列表
 export const getUserList = (params: User.ReqUserParams) => {
