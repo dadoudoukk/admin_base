@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import time
 import traceback
@@ -49,8 +50,6 @@ def _should_bypass_api_control(request: Request) -> bool:
     if path in DOC_PATHS or path.startswith("/docs") or path.startswith("/redoc"):
         return True
     if path.startswith("/uploads"):
-        return True
-    if path in LOGIN_PATHS:
         return True
     return False
 
@@ -154,7 +153,9 @@ async def oper_log_middleware(request: Request, call_next):
         )
 
     access_token = request.headers.get("x-access-token")
-    if cfg_exists and bool(ctrl_cfg.get("auth_required", True)):
+    is_login_path = raw_path in LOGIN_PATHS
+    # 登录接口仍然允许匿名访问，不走鉴权拦截。
+    if cfg_exists and (not is_login_path) and bool(ctrl_cfg.get("auth_required", True)):
         ctx = await require_user(access_token)
         if not ctx:
             return JSONResponse(
@@ -165,7 +166,8 @@ async def oper_log_middleware(request: Request, call_next):
 
     if cfg_exists:
         qps = int(ctrl_cfg.get("rate_limit") or 0)
-        if qps > 0 and not check_api_rate_limit(control_path, method, qps):
+        # 登录接口不启用接口级限流，避免和登录专用 limiter 规则重复。
+        if (not is_login_path) and qps > 0 and not check_api_rate_limit(control_path, method, qps):
             return JSONResponse(
                 status_code=429,
                 content=make_response(429, data=None, msg="请求过于频繁"),
@@ -182,6 +184,7 @@ async def oper_log_middleware(request: Request, call_next):
     url = raw_path[:512]
 
     request_param_str: Optional[str] = None
+    fallback_user_name: Optional[str] = None
     ct = (request.headers.get("content-type") or "").lower()
     if "multipart/form-data" in ct:
         request_param_str = "[multipart/form-data，未记录正文]"
@@ -192,6 +195,15 @@ async def oper_log_middleware(request: Request, call_next):
                 request_param_str = body_bytes.decode("utf-8")[:2000]
             except UnicodeDecodeError:
                 request_param_str = body_bytes.decode("utf-8", errors="replace")[:2000]
+            if is_login_path and request_param_str:
+                try:
+                    payload = json.loads(request_param_str)
+                except Exception:
+                    payload = None
+                if isinstance(payload, dict):
+                    username = payload.get("username")
+                    if isinstance(username, str):
+                        fallback_user_name = username.strip()[:64] or None
 
         async def receive():
             return {"type": "http.request", "body": body_bytes}
@@ -220,6 +232,7 @@ async def oper_log_middleware(request: Request, call_next):
                 status_val,  # status
                 err_msg,  # error_msg
                 request_param_str,  # request_param
+                fallback_user_name,  # fallback_user_name
             )
         )
 

@@ -30,13 +30,14 @@ async def save_oper_log_async(
     status: int,
     error_msg: Optional[str],
     request_param: Optional[str],
+    fallback_user_name: Optional[str] = None,
 ) -> None:
     """后台任务内创建独立 AsyncSession，禁止复用请求会话。"""
     if AsyncSessionLocal is None:
         return
     async with AsyncSessionLocal() as db:
         try:
-            user_name: Optional[str] = None
+            user_name: Optional[str] = (fallback_user_name or "").strip()[:64] or None
             if access_token:
                 claims = decode_access_token(access_token)
                 if claims and claims.get("user_id") is not None:
@@ -91,6 +92,7 @@ async def flush_oper_log_background(
     status: int,
     error_msg: Optional[str],
     request_param: Optional[str],
+    fallback_user_name: Optional[str] = None,
 ) -> None:
     try:
         await save_oper_log_async(
@@ -102,6 +104,7 @@ async def flush_oper_log_background(
             status,
             error_msg,
             request_param,
+            fallback_user_name,
         )
     except Exception:
         logger.exception("异步写入操作日志失败")
