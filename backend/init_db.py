@@ -8,6 +8,7 @@
     python backend/init_db.py
 
 数据库连接使用 backend/.env 中的 DATABASE_URL（经 core.config / core.database 加载），请按需修改。
+若修改 .env 后仍连错库，先运行: python print_db_config.py（查看环境变量是否覆盖了 .env）。
 """
 from __future__ import annotations
 
@@ -39,9 +40,10 @@ from models import (  # noqa: F401
     SysUser,
 )
 
-from core.database import AsyncSessionLocal, Base, DATABASE_URL, async_engine
+from core.database import AsyncSessionLocal, Base, DATABASE_URL, async_engine, sync_engine
 
-engine = async_engine.sync_engine
+# 使用独立同步引擎做建表与 ALTER，勿用 async_engine.sync_engine（aiomysql 下会 MissingGreenlet）
+engine = sync_engine
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -200,6 +202,41 @@ def ensure_user_gender_column() -> None:
             )
         )
     print("已为 sys_user 表补充 gender 字段（旧库升级）。")
+
+
+def ensure_sys_menu_api_path_prefix_column() -> None:
+    """旧库为 sys_menu 补充 api_path_prefix（接口管理与菜单归属）。"""
+    _add_column_if_absent(
+        "sys_menu",
+        "api_path_prefix",
+        "ALTER TABLE sys_menu ADD COLUMN api_path_prefix VARCHAR(512) NULL",
+        "ALTER TABLE sys_menu ADD COLUMN api_path_prefix VARCHAR(512) NULL COMMENT '接口路径前缀，逗号分隔'",
+    )
+
+
+def ensure_menu_api_path_prefix_seed(session: Session) -> None:
+    """为内置 MENU 回填 api_path_prefix（仅当该字段为空时写入）。"""
+    mapping = [
+        ("accountManage", "/api/user"),
+        ("roleManage", "/api/role"),
+        ("menuManage", "/api/menu,/api/auth"),
+        ("dictManage", "/api/dict"),
+        ("systemLog", "/api/sys/log"),
+        ("apiManage", "/api/sys/api"),
+        ("fragmentManage", "/api/biz/fragment"),
+        ("newsCategory", "/api/biz/newsCategory"),
+        ("newsArticle", "/api/biz/newsArticle"),
+        ("home_index", "/api/biz/home"),
+    ]
+    updated = 0
+    for name, prefix in mapping:
+        m = session.query(SysMenu).filter(SysMenu.name == name, SysMenu.is_delete == 0).first()
+        if m and not (m.api_path_prefix or "").strip():
+            m.api_path_prefix = prefix
+            updated += 1
+    session.commit()
+    if updated:
+        print(f"已为 {updated} 个菜单补充 api_path_prefix（接口归属映射）。")
 
 
 def ensure_sys_api_extra_columns() -> None:
@@ -815,41 +852,47 @@ def ensure_root_department_and_backfill(session: Session) -> None:
 
 
 async def main() -> None:
-    ensure_tables()
-    ensure_user_gender_column()
-    ensure_biz_news_article_cover_image_column()
-    ensure_sys_oper_log_request_param_column()
-    ensure_sys_user_dept_id_column()
-    ensure_sys_role_data_scope_column()
-    ensure_biz_news_category_data_perm_columns()
-    ensure_biz_news_article_data_perm_columns()
-    ensure_biz_fragment_category_data_perm_columns()
-    ensure_biz_fragment_content_data_perm_columns()
-    ensure_sys_api_extra_columns()
-    async with AsyncSessionLocal() as session:
-        try:
-            await session.run_sync(seed)
-            await session.run_sync(ensure_user_manage_menu)
-            await session.run_sync(ensure_role_manage_menu)
-            await session.run_sync(ensure_menu_manage_menu)
-            await session.run_sync(ensure_system_log_menu)
-            await session.run_sync(ensure_api_manage_menu)
-            await session.run_sync(ensure_dict_manage_menu)
-            await session.run_sync(ensure_sys_dict_init)
-            await session.run_sync(ensure_news_center_menu)
-            await session.run_sync(ensure_news_category_init)
-            await session.run_sync(ensure_news_article_menu)
-            await session.run_sync(ensure_news_article_init)
-            await session.run_sync(ensure_business_manage_menu)
-            await session.run_sync(ensure_fragment_manage_menu)
-            await session.run_sync(ensure_fragment_category_seed)
-            await session.run_sync(ensure_dict_news_button_menus)
-            await session.run_sync(ensure_role_button_menus)
-            await session.run_sync(ensure_fragment_button_menus)
-            await session.run_sync(ensure_root_department_and_backfill)
-        except Exception:
-            await session.rollback()
-            raise
+    try:
+        ensure_tables()
+        ensure_user_gender_column()
+        ensure_biz_news_article_cover_image_column()
+        ensure_sys_oper_log_request_param_column()
+        ensure_sys_user_dept_id_column()
+        ensure_sys_role_data_scope_column()
+        ensure_biz_news_category_data_perm_columns()
+        ensure_biz_news_article_data_perm_columns()
+        ensure_biz_fragment_category_data_perm_columns()
+        ensure_biz_fragment_content_data_perm_columns()
+        ensure_sys_api_extra_columns()
+        ensure_sys_menu_api_path_prefix_column()
+        async with AsyncSessionLocal() as session:
+            try:
+                await session.run_sync(seed)
+                await session.run_sync(ensure_user_manage_menu)
+                await session.run_sync(ensure_role_manage_menu)
+                await session.run_sync(ensure_menu_manage_menu)
+                await session.run_sync(ensure_system_log_menu)
+                await session.run_sync(ensure_api_manage_menu)
+                await session.run_sync(ensure_menu_api_path_prefix_seed)
+                await session.run_sync(ensure_dict_manage_menu)
+                await session.run_sync(ensure_sys_dict_init)
+                await session.run_sync(ensure_news_center_menu)
+                await session.run_sync(ensure_news_category_init)
+                await session.run_sync(ensure_news_article_menu)
+                await session.run_sync(ensure_news_article_init)
+                await session.run_sync(ensure_business_manage_menu)
+                await session.run_sync(ensure_fragment_manage_menu)
+                await session.run_sync(ensure_fragment_category_seed)
+                await session.run_sync(ensure_dict_news_button_menus)
+                await session.run_sync(ensure_role_button_menus)
+                await session.run_sync(ensure_fragment_button_menus)
+                await session.run_sync(ensure_root_department_and_backfill)
+            except Exception:
+                await session.rollback()
+                raise
+    finally:
+        # Windows 下若不显式 dispose，aiomysql 连接对象可能在事件循环关闭后才析构，出现噪音告警。
+        await async_engine.dispose()
 
 
 if __name__ == "__main__":

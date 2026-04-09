@@ -8,6 +8,9 @@ PyJWT>=2.0.0
 httpx>=0.27.0
 SQLAlchemy>=2.0.0
 aiomysql>=0.2.0
+PyMySQL>=1.1.0
+# MySQL 8+ caching_sha2_password：PyMySQL 做 RSA 认证时需要
+cryptography>=42.0.0
 passlib[bcrypt]>=1.7.4
 # passlib 与 bcrypt 4.1+ 不兼容，需限制版本
 bcrypt>=4.0.1,<4.1

@@ -67,6 +67,15 @@
         <el-form-item label="排序" prop="sort">
           <el-input-number v-model="form.sort" :min="0" controls-position="right" style="width: 100%" />
         </el-form-item>
+        <el-form-item v-if="form.menuType === 'MENU'" label="接口路径前缀" prop="apiPathPrefix">
+          <el-input
+            v-model="form.apiPathPrefix"
+            type="textarea"
+            :rows="2"
+            placeholder="后端 API 路径前缀，多个用英文逗号分隔，如 /api/user,/api/role"
+            clearable
+          />
+        </el-form-item>
         <el-form-item label="备注" prop="remark">
           <el-input v-model="form.remark" type="textarea" :rows="2" clearable />
         </el-form-item>
@@ -107,7 +116,8 @@ const form = reactive({
   icon: "",
   permission: "",
   sort: 0,
-  remark: ""
+  remark: "",
+  apiPathPrefix: ""
 });
 
 const rules: FormRules = {
@@ -152,6 +162,7 @@ const resetForm = () => {
   form.permission = "";
   form.sort = 0;
   form.remark = "";
+  form.apiPathPrefix = "";
   formRef.value?.clearValidate();
 };
 
@@ -185,6 +196,7 @@ const openEdit = (row: MenuTreeNode) => {
   form.permission = row.permission || "";
   form.sort = row.sort ?? 0;
   form.remark = row.remark || "";
+  form.apiPathPrefix = row.apiPathPrefix || "";
   dialogVisible.value = true;
 };
 
@@ -205,7 +217,8 @@ const submitForm = () => {
           icon: form.icon || undefined,
           permission: form.permission || undefined,
           sort: form.sort,
-          remark: form.remark || undefined
+          remark: form.remark || undefined,
+          apiPathPrefix: form.menuType === "MENU" ? form.apiPathPrefix.trim() || "" : ""
         });
         ElMessage.success({ message: res.msg || "编辑成功" });
       } else {
@@ -219,7 +232,8 @@ const submitForm = () => {
           icon: form.icon || undefined,
           permission: form.permission || undefined,
           sort: form.sort,
-          remark: form.remark || undefined
+          remark: form.remark || undefined,
+          apiPathPrefix: form.menuType === "MENU" ? form.apiPathPrefix.trim() || undefined : undefined
         });
         ElMessage.success({ message: res.msg || "新增成功" });
       }

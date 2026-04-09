@@ -21,7 +21,17 @@
           <el-input v-model="form.api_name" placeholder="请输入接口名称" clearable />
         </el-form-item>
         <el-form-item label="所属模块" prop="api_module">
-          <el-input v-model="form.api_module" placeholder="请输入所属模块" clearable />
+          <el-select
+            v-model="form.api_module"
+            class="w-full"
+            filterable
+            clearable
+            allow-create
+            default-first-option
+            placeholder="选择菜单板块或手动输入"
+          >
+            <el-option v-for="o in moduleOptions" :key="o.value" :label="o.label" :value="o.value" />
+          </el-select>
         </el-form-item>
         <el-form-item label="限流 QPS" prop="rate_limit">
           <el-input-number v-model="form.rate_limit" :min="0" :step="1" />
@@ -39,18 +49,27 @@
 </template>
 
 <script setup lang="tsx" name="apiManage">
-import { reactive, ref } from "vue";
+import { onMounted, reactive, ref } from "vue";
 import { Refresh } from "@element-plus/icons-vue";
 import { ElMessage, type FormInstance, type FormRules } from "element-plus";
 import ProTable from "@/components/ProTable/index.vue";
 import type { ColumnProps, ProTableInstance } from "@/components/ProTable/interface";
-import { changeSysApiStatus, editSysApi, getSysApiList, syncSysApi, type SysApiRow } from "@/api/modules/sysApi";
+import {
+  changeSysApiStatus,
+  editSysApi,
+  getSysApiList,
+  getSysApiModuleOptions,
+  syncSysApi,
+  type ApiModuleOption,
+  type SysApiRow
+} from "@/api/modules/sysApi";
 
 const proTable = ref<ProTableInstance>();
 const syncLoading = ref(false);
 const drawerVisible = ref(false);
 const submitLoading = ref(false);
 const formRef = ref<FormInstance>();
+const moduleOptions = ref<ApiModuleOption[]>([]);
 
 const dataCallback = (data: any) => ({
   list: data.list,
@@ -101,7 +120,7 @@ const form = reactive({
 
 const rules: FormRules = {
   api_name: [{ required: true, message: "请输入接口名称", trigger: "blur" }],
-  api_module: [{ required: true, message: "请输入所属模块", trigger: "blur" }],
+  api_module: [{ required: true, message: "请选择或输入所属模块", trigger: "change" }],
   rate_limit: [{ required: true, message: "请输入限流QPS", trigger: "change" }]
 };
 
@@ -149,6 +168,24 @@ const submitEdit = () => {
   });
 };
 
+const loadModuleFilterOptions = async () => {
+  try {
+    const res = await getSysApiModuleOptions();
+    moduleOptions.value = res.data ?? [];
+    const col = columns.find(c => c.prop === "apiModule");
+    if (col) {
+      col.search = { el: "select", props: { filterable: true, clearable: true } };
+      col.enum = moduleOptions.value;
+    }
+  } catch {
+    moduleOptions.value = [{ label: "其他", value: "其他" }];
+  }
+};
+
+onMounted(() => {
+  loadModuleFilterOptions();
+});
+
 const methodTagType = (m: string) => {
   const u = (m || "").toUpperCase();
   if (u === "GET") return "success";
@@ -184,8 +221,9 @@ const columns = reactive<ColumnProps<SysApiRow>[]>([
   {
     prop: "apiModule",
     label: "所属模块",
-    minWidth: 120,
-    search: { el: "input" }
+    minWidth: 140,
+    search: { el: "select", props: { filterable: true, clearable: true } },
+    enum: [] as ApiModuleOption[]
   },
   {
     prop: "rateLimit",

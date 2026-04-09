@@ -121,6 +121,7 @@ def menu_node_all_tree(m: SysMenu) -> Dict[str, Any]:
     node["permission"] = m.permission or ""
     node["sort"] = m.sort
     node["remark"] = m.remark or ""
+    node["apiPathPrefix"] = m.api_path_prefix or ""
     return node
 
 

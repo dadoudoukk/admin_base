@@ -134,6 +134,8 @@ async def menu_add(
     raw_permission = (body.permission or "").strip()
     permission = raw_permission or (name if mt == "BUTTON" else None)
 
+    api_prefix = (body.apiPathPrefix or "").strip() or None
+
     m = SysMenu(
         parent_id=pid,
         menu_type=mt,
@@ -145,6 +147,7 @@ async def menu_add(
         permission=permission,
         sort=body.sort,
         remark=body.remark,
+        api_path_prefix=api_prefix,
         status=True,
     )
     db.add(m)
@@ -202,6 +205,8 @@ async def menu_edit(
         m.remark = body.remark
     if body.status is not None:
         m.status = body.status
+    if body.apiPathPrefix is not None:
+        m.api_path_prefix = (body.apiPathPrefix or "").strip() or None
 
     if m.menu_type == "BUTTON" and not (m.permission or "").strip():
         m.permission = (m.name or "").strip() or None

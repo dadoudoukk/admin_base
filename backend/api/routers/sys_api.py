@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.deps import get_async_db, make_response, require_user
 from core.redis_client import cache_delete_by_pattern, cache_get_json, cache_set_json, get_redis_client
-from models import SysApi
+from models import SysApi, SysMenu
 from schemas.system import SysApiChangeStatusBody, SysApiListBody, SysApiUpdateBody
 
 router = APIRouter(prefix="/sys/api", tags=["接口管理"])
@@ -37,6 +37,41 @@ def parse_api_module(path: str) -> str:
     if parts[0] == "api" and len(parts) > 1:
         return parts[1]
     return parts[0]
+
+
+async def _load_menu_api_module_rules(db: AsyncSession) -> list[tuple[str, str]]:
+    """(路径前缀, 菜单标题)，按前缀长度降序，供最长匹配。"""
+    rows = (
+        await db.scalars(
+            select(SysMenu).where(
+                SysMenu.is_delete == 0,
+                SysMenu.menu_type == "MENU",
+            )
+        )
+    ).all()
+    pairs: list[tuple[str, str]] = []
+    for m in rows:
+        raw = (m.api_path_prefix or "").strip()
+        if not raw:
+            continue
+        title = (m.title or "").strip() or (m.name or "").strip() or "未命名"
+        for part in raw.split(","):
+            seg = part.strip().rstrip("/")
+            if not seg:
+                continue
+            if not seg.startswith("/"):
+                seg = "/" + seg
+            pairs.append((seg, title))
+    pairs.sort(key=lambda x: len(x[0]), reverse=True)
+    return pairs
+
+
+def _resolve_api_module_title(path: str, rules: list[tuple[str, str]]) -> str:
+    p = path.rstrip("/") if path else ""
+    for prefix, title in rules:
+        if p == prefix or p.startswith(prefix + "/"):
+            return title
+    return "其他"
 
 
 def _api_row(row: SysApi) -> Dict[str, Any]:
@@ -150,6 +185,8 @@ async def sync_sys_api(
     if not ctx:
         return make_response(401, data={}, msg="登录过期，请重新登录")
 
+    module_rules = await _load_menu_api_module_rules(db)
+
     discovered: Dict[str, Dict[str, str]] = {}
     for route in request.app.routes:
         if not isinstance(route, APIRoute):
@@ -166,7 +203,7 @@ async def sync_sys_api(
                 "path": route.path,
                 "method": method_upper,
                 "name": (route.summary or route.name or "").strip(),
-                "module": parse_api_module(route.path),
+                "module": _resolve_api_module_title(route.path, module_rules),
             }
 
     existing_rows = (
@@ -199,8 +236,7 @@ async def sync_sys_api(
         if item["name"] and row.api_name != item["name"]:
             row.api_name = item["name"]
             updated_name += 1
-        if not (row.api_module or "").strip():
-            row.api_module = item["module"]
+        row.api_module = item["module"]
         row.update_time = now
 
     discovered_keys = set(discovered.keys())
@@ -227,6 +263,33 @@ async def sync_sys_api(
         },
         msg="同步完成",
     )
+
+
+@router.get("/module_options")
+async def sys_api_module_options(
+    db: AsyncSession = Depends(get_async_db),
+    x_access_token: Optional[str] = Header(default=None, alias="x-access-token"),
+) -> Dict[str, Any]:
+    """所属模块下拉：已配置 api_path_prefix 的菜单标题 +「其他」。"""
+    ctx = await require_user(x_access_token)
+    if not ctx:
+        return make_response(401, data=[], msg="登录过期，请重新登录")
+
+    rows = (
+        await db.scalars(
+            select(SysMenu).where(SysMenu.is_delete == 0, SysMenu.menu_type == "MENU")
+        )
+    ).all()
+    titles: set[str] = set()
+    for m in rows:
+        if (m.api_path_prefix or "").strip():
+            t = (m.title or "").strip()
+            if t:
+                titles.add(t)
+    ordered = sorted(titles)
+    options = [{"label": t, "value": t} for t in ordered]
+    options.append({"label": "其他", "value": "其他"})
+    return make_response(200, data=options, msg="success")
 
 
 @router.post("/list")

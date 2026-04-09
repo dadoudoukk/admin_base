@@ -42,6 +42,15 @@ export interface ReqSysApiChangeStatus {
   value: boolean | number;
 }
 
+export interface ApiModuleOption {
+  label: string;
+  value: string;
+}
+
+export const getSysApiModuleOptions = () => {
+  return http.get<ApiModuleOption[]>(PORT1 + `/sys/api/module_options`);
+};
+
 export const syncSysApi = () => {
   return http.post(PORT1 + `/sys/api/sync`);
 };

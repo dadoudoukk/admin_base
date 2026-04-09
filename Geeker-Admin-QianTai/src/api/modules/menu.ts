@@ -14,6 +14,8 @@ export interface MenuTreeNode {
   meta: { icon?: string; title?: string; [k: string]: unknown };
   sort?: number;
   remark?: string;
+  /** 后端接口路径前缀，逗号分隔，仅 MENU 使用 */
+  apiPathPrefix?: string;
   children?: MenuTreeNode[];
 }
 
@@ -33,6 +35,7 @@ export const addMenu = (params: {
   permission?: string;
   sort?: number;
   remark?: string;
+  apiPathPrefix?: string;
 }) => {
   return http.post(PORT1 + `/menu/add`, params);
 };
@@ -50,6 +53,7 @@ export const editMenu = (params: {
   sort?: number;
   remark?: string;
   status?: boolean;
+  apiPathPrefix?: string;
 }) => {
   return http.post(PORT1 + `/menu/edit`, params);
 };

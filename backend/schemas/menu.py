@@ -16,6 +16,10 @@ class MenuAddBody(BaseModel):
     permission: Optional[str] = None
     sort: int = 0
     remark: Optional[str] = None
+    apiPathPrefix: Optional[str] = Field(
+        None,
+        description="MENU 类型可选：后端接口路径前缀，多条逗号分隔，如 /api/user,/api/auth",
+    )
 
 
 class MenuEditBody(BaseModel):
@@ -31,6 +35,7 @@ class MenuEditBody(BaseModel):
     sort: Optional[int] = None
     remark: Optional[str] = None
     status: Optional[bool] = None
+    apiPathPrefix: Optional[str] = None
 
 
 class MenuDeleteBody(BaseModel):

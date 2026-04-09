@@ -177,6 +177,11 @@ class SysMenu(SoftDeleteMixin, Base):
     is_keep_alive: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     status: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     remark: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    api_path_prefix: Mapped[Optional[str]] = mapped_column(
+        String(512),
+        nullable=True,
+        comment="接口路径前缀，匹配 sys_api；多条用英文逗号分隔，如 /api/user,/api/role",
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
