@@ -35,6 +35,8 @@
   }
   .classic-content {
     display: flex;
+    flex: 1;
+    min-height: 0;
     height: calc(100% - 55px);
     :deep(.el-aside) {
       width: auto;
@@ -54,7 +56,11 @@
     }
     .classic-main {
       display: flex;
+      flex: 1;
       flex-direction: column;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
     }
   }
 }

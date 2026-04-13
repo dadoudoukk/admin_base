@@ -76,6 +76,41 @@ pnpm build:test
 pnpm build:pro
 ```
 
+### 生产部署（Nginx 与接口文档）📡
+
+若前端与 FastAPI 同域由 Nginx 反代（开发环境用 `VITE_PROXY` 代理 `/api`、`/docs`、`/openapi.json`），生产环境也需为 **业务接口** 与 **Swagger 文档** 一并转发，否则管理后台内嵌的 Swagger 会报 404 或无法加载 `openapi.json`。
+
+除已有的 `/api` 前缀外，请至少将 **`/docs`** 与 **`/openapi.json`** 转发到同一后端实例（端口与内网地址按实际修改）：
+
+```nginx
+location /api/ {
+    proxy_pass http://127.0.0.1:8000;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+
+# Swagger UI 与 OpenAPI 规范（iframe 同源请求）
+location /docs {
+    proxy_pass http://127.0.0.1:8000;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+
+location = /openapi.json {
+    proxy_pass http://127.0.0.1:8000/openapi.json;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+```
+
+若前端静态资源与 API 不同域，也可将 `VITE_API_URL` 配成带协议的完整后端根地址，并在网关侧放行 CORS；内嵌 iframe 时仍需注意后端勿下发 **`X-Frame-Options: DENY`**（见后端 `main.py` 中注释说明）。
+
 - **Lint：**
 
 ```text

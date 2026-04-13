@@ -1,8 +1,21 @@
 .el-main {
   box-sizing: border-box;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
   padding: 10px 12px;
-  overflow-x: hidden;
+  overflow: hidden;
   background-color: var(--el-bg-color-page);
+}
+
+/* 主内容区滚动下沉到此层，避免与内嵌 iframe（如 Swagger）形成双重滚动条 */
+.main-route-scroll {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  overflow: auto;
 }
 .el-footer {
   height: auto;

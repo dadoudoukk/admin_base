@@ -20,7 +20,7 @@
         </el-scrollbar>
       </div>
     </el-aside>
-    <el-container>
+    <el-container class="vertical-main">
       <el-header>
         <ToolBarLeft />
         <ToolBarRight />

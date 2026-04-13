@@ -2,13 +2,15 @@
   <Maximize v-show="maximize" />
   <Tabs v-show="tabs" />
   <el-main>
-    <router-view v-slot="{ Component, route }">
-      <transition appear name="fade-transform" mode="out-in">
-        <keep-alive :include="keepAliveName">
-          <component :is="createComponentWrapper(Component, route)" v-if="isRouterShow" :key="route.fullPath" />
-        </keep-alive>
-      </transition>
-    </router-view>
+    <div class="main-route-scroll">
+      <router-view v-slot="{ Component, route }">
+        <transition appear name="fade-transform" mode="out-in">
+          <keep-alive :include="keepAliveName">
+            <component :is="createComponentWrapper(Component, route)" v-if="isRouterShow" :key="route.fullPath" />
+          </keep-alive>
+        </transition>
+      </router-view>
+    </div>
   </el-main>
   <el-footer v-show="footer">
     <Footer />

@@ -38,7 +38,7 @@
         </el-menu>
       </el-scrollbar>
     </el-aside>
-    <el-container>
+    <el-container class="columns-main">
       <el-header>
         <ToolBarLeft />
         <ToolBarRight />

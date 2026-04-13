@@ -30,7 +30,10 @@ _settings = get_settings()
 DOC_PATHS = ("/docs", "/redoc", "/openapi.json")
 LOGIN_PATHS = ("/api/login",)
 
-app = FastAPI(title="Geeker-Admin FastAPI Auth Center")
+app = FastAPI(title="接口调试")
+# 若后续增加安全响应头中间件：请勿对管理端同源 iframe 内嵌 /docs 使用 X-Frame-Options: DENY
+# （或 frame-ancestors 'none'），否则浏览器会拦截 iframe 导致 Swagger 白屏；需 SAMEORIGIN、
+# 指定允许的 ancestor，或仅对 API 路径加严、对文档路径放行。
 app.state.limiter = limiter
 app.add_middleware(SlowAPIMiddleware)
 

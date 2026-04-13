@@ -923,6 +923,20 @@
             "isAffix": false,
             "isKeepAlive": true
           }
+        },
+        {
+          "path": "/system/apiDocs",
+          "name": "apiDocs",
+          "component": "/link/bing/index",
+          "meta": {
+            "icon": "Document",
+            "title": "接口文档",
+            "isLink": "",
+            "isHide": false,
+            "isFull": false,
+            "isAffix": false,
+            "isKeepAlive": true
+          }
         }
       ]
     },

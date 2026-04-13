@@ -463,6 +463,36 @@ def ensure_api_manage_menu(session: Session) -> None:
     print("已检查「系统管理 -> 接口管理」菜单并关联超级管理员角色。")
 
 
+def ensure_api_docs_iframe_menu(session: Session) -> None:
+    """在「系统管理」下挂「接口文档」（内嵌 Swagger），复用前端 iframe 壳组件；已存在则跳过。"""
+    parent = session.query(SysMenu).filter(SysMenu.name == "system").first()
+    if not parent:
+        print("未找到「系统管理」菜单，跳过接口文档菜单补充。")
+        return
+    if session.query(SysMenu).filter(SysMenu.name == "apiDocs").first():
+        return
+
+    child = SysMenu(
+        parent_id=parent.id,
+        menu_type="MENU",
+        name="apiDocs",
+        title="接口文档",
+        path="/system/apiDocs",
+        component="/link/bing/index",
+        icon="Document",
+        sort=7,
+    )
+    session.add(child)
+    session.flush()
+
+    role = session.query(SysRole).filter(SysRole.code == "admin").first()
+    if role and child not in role.menus:
+        role.menus.append(child)
+
+    session.commit()
+    print("已补充「系统管理 -> 接口文档」菜单并关联超级管理员角色。")
+
+
 def ensure_button_menus_under_parent(
     session: Session,
     parent_menu_name: str,
@@ -873,6 +903,7 @@ async def main() -> None:
                 await session.run_sync(ensure_menu_manage_menu)
                 await session.run_sync(ensure_system_log_menu)
                 await session.run_sync(ensure_api_manage_menu)
+                await session.run_sync(ensure_api_docs_iframe_menu)
                 await session.run_sync(ensure_menu_api_path_prefix_seed)
                 await session.run_sync(ensure_dict_manage_menu)
                 await session.run_sync(ensure_sys_dict_init)
