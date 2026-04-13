@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from datetime import datetime
 from pathlib import Path
 
 # 保证从任意工作目录运行都能导入 backend 包
@@ -22,6 +23,8 @@ if str(_BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(_BACKEND_ROOT))
 
 from passlib.context import CryptContext
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 # 导入模型，确保 metadata 完整
@@ -35,6 +38,7 @@ from models import (  # noqa: F401
     SysDictType,
     SysMenu,
     SysApi,
+    SysConfig,
     SysOperLog,
     SysRole,
     SysUser,
@@ -493,6 +497,68 @@ def ensure_api_docs_iframe_menu(session: Session) -> None:
     print("已补充「系统管理 -> 接口文档」菜单并关联超级管理员角色。")
 
 
+def ensure_system_config_menu(session: Session) -> None:
+    """在「系统管理」下挂「全局配置」菜单并授权 admin；字段与前端 authMenuList 一致。"""
+    parent = session.query(SysMenu).filter(SysMenu.name == "system").first()
+    if not parent:
+        print("未找到「系统管理」菜单，跳过全局配置菜单补充。")
+        return
+    child = session.query(SysMenu).filter(SysMenu.name == "systemConfig").first()
+    if not child:
+        child = SysMenu(
+            parent_id=parent.id,
+            menu_type="MENU",
+            name="systemConfig",
+            title="全局配置",
+            path="/system/systemConfig",
+            component="/system/systemConfig/index",
+            icon="Setting",
+            sort=55,
+        )
+        session.add(child)
+        session.flush()
+
+    role = session.query(SysRole).filter(SysRole.code == "admin").first()
+    if role and child not in role.menus:
+        role.menus.append(child)
+    session.commit()
+    print("已检查「系统管理 -> 全局配置」菜单并关联超级管理员角色。")
+
+
+async def ensure_sys_config(session: AsyncSession) -> None:
+    """sys_config 出厂键值：按 config_key 检测，缺则补，可重复执行。"""
+    now = datetime.utcnow()
+    seeds = (
+        ("sys_app_name", "系统名称", "Geeker Admin", "text", "左上角和浏览器标签页标题"),
+        ("sys_logo", "系统Logo", "", "image", "左上角系统Logo图片"),
+        ("sys_login_captcha", "登录验证码开关", "true", "boolean", "控制登录页是否显示图形验证码"),
+    )
+    created = 0
+    for key, cname, cvalue, ctype, remark in seeds:
+        existing = await session.scalar(
+            select(SysConfig.id).where(SysConfig.config_key == key, SysConfig.is_delete == 0).limit(1)
+        )
+        if existing is not None:
+            continue
+        session.add(
+            SysConfig(
+                config_name=cname,
+                config_key=key,
+                config_value=cvalue,
+                config_type=ctype,
+                remark=remark,
+                create_time=now,
+                update_time=now,
+            )
+        )
+        created += 1
+    if created:
+        await session.commit()
+        print(f"已写入 sys_config 出厂默认数据（新增 {created} 条）。")
+    else:
+        print("sys_config 关键项已存在，跳过种子数据。")
+
+
 def ensure_button_menus_under_parent(
     session: Session,
     parent_menu_name: str,
@@ -904,6 +970,8 @@ async def main() -> None:
                 await session.run_sync(ensure_system_log_menu)
                 await session.run_sync(ensure_api_manage_menu)
                 await session.run_sync(ensure_api_docs_iframe_menu)
+                await session.run_sync(ensure_system_config_menu)
+                await ensure_sys_config(session)
                 await session.run_sync(ensure_menu_api_path_prefix_seed)
                 await session.run_sync(ensure_dict_manage_menu)
                 await session.run_sync(ensure_sys_dict_init)

@@ -2,6 +2,9 @@ import { defineStore } from "pinia";
 import { GlobalState } from "@/stores/interface";
 import { DEFAULT_PRIMARY } from "@/config";
 import piniaPersistConfig from "@/stores/helper/persist";
+import { getSysConfigAll } from "@/api/modules/sysConfig";
+
+const DEFAULT_APP_LOGO = new URL("../../assets/images/logo.svg", import.meta.url).href;
 
 export const useGlobalStore = defineStore({
   id: "geeker-global",
@@ -42,13 +45,36 @@ export const useGlobalStore = defineStore({
     // 标签页图标
     tabsIcon: true,
     // 页脚
-    footer: true
+    footer: true,
+    sysConfigMap: {} as Record<string, unknown>
   }),
-  getters: {},
+  getters: {
+    /** 优先 sysConfigMap.sys_app_name，否则环境变量标题 */
+    displayAppTitle(): string {
+      const raw = this.sysConfigMap["sys_app_name"];
+      if (raw != null && String(raw).trim() !== "") return String(raw).trim();
+      return import.meta.env.VITE_GLOB_APP_TITLE;
+    },
+    /** 优先 sysConfigMap.sys_logo（URL），否则默认本地 Logo */
+    displayAppLogo(): string {
+      const raw = this.sysConfigMap["sys_logo"];
+      if (raw != null && String(raw).trim() !== "") return String(raw).trim();
+      return DEFAULT_APP_LOGO;
+    }
+  },
   actions: {
     // Set GlobalState
     setGlobalState(...args: ObjToKeyValArray<GlobalState>) {
       this.$patch({ [args[0]]: args[1] });
+    },
+    async initSysConfig() {
+      try {
+        const res = await getSysConfigAll();
+        const map = res.data?.map;
+        this.sysConfigMap = map && typeof map === "object" && !Array.isArray(map) ? { ...map } : {};
+      } catch {
+        this.sysConfigMap = {};
+      }
     }
   },
   persist: piniaPersistConfig("geeker-global")

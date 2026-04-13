@@ -2,7 +2,7 @@ from core.database import AsyncSessionLocal, Base, async_engine
 from models.business import BizFragmentCategory, BizFragmentContent, BizNewsArticle, BizNewsCategory
 from models.dictionary import SysDictData, SysDictType
 from models.rbac import DataScopeEnum, SysMenu, SysRole, SysRoleDept, SysRoleMenu, SysUser, SysUserRole
-from models.system import SysApi, SysDept, SysOperLog
+from models.system import SysApi, SysConfig, SysDept, SysOperLog
 
 __all__ = [
     "Base",
@@ -24,5 +24,6 @@ __all__ = [
     "BizFragmentContent",
     "SysOperLog",
     "SysApi",
+    "SysConfig",
 ]
 

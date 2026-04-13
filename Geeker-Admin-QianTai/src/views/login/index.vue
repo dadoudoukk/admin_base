@@ -52,32 +52,41 @@
 
     <div class="form-side">
       <div class="login-container">
-        <h1>欢迎回来！</h1>
+        <div class="login-brand">
+          <img class="login-brand-logo" :src="logoUrl" alt="" />
+          <h1 class="login-brand-title">{{ displayName }}</h1>
+        </div>
         <p class="subtitle">请输入您的详细信息</p>
 
-        <form @submit.prevent="handleLogin">
-          <div class="form-group">
-            <label for="email">账号</label>
-            <input
+        <el-form
+          ref="loginFormRef"
+          class="login-el-form"
+          :model="loginForm"
+          :rules="loginRules"
+          label-position="top"
+          @submit.prevent="handleLogin"
+        >
+          <el-form-item label="账号" prop="username">
+            <el-input
               id="email"
               v-model="loginForm.username"
-              type="text"
               placeholder="请输入您的账号"
               autocomplete="username"
+              size="large"
               @focus="isPeeking = true"
               @blur="isPeeking = false"
             />
-          </div>
+          </el-form-item>
 
-          <div class="form-group">
-            <label for="password">密码</label>
-            <div style="position: relative">
-              <input
+          <el-form-item label="密码" prop="password">
+            <div class="password-field-wrap">
+              <el-input
                 id="password"
                 v-model="loginForm.password"
                 :type="passwordType"
                 placeholder="请输入密码"
                 autocomplete="current-password"
+                size="large"
                 @focus="isPeeking = true"
                 @blur="isPeeking = false"
               />
@@ -112,34 +121,92 @@
                 </svg>
               </span>
             </div>
-          </div>
+          </el-form-item>
 
-          <button type="submit" class="btn-primary">登录</button>
-        </form>
+          <el-form-item v-if="showCaptcha" label="验证码" prop="captcha">
+            <div class="captcha-row">
+              <el-input v-model="loginForm.captcha" placeholder="请输入右侧字符" size="large" clearable />
+              <div class="captcha-img" title="点击刷新" @click="refreshCaptcha">{{ captchaAnswer }}</div>
+            </div>
+          </el-form-item>
+
+          <el-form-item>
+            <el-button type="primary" class="btn-primary" native-type="submit" :loading="loginLoading">登录</el-button>
+          </el-form-item>
+        </el-form>
       </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted } from "vue";
+import { ref, reactive, computed, onMounted, watch } from "vue";
 import { useRouter } from "vue-router";
 import { HOME_URL } from "@/config";
+import { getSysConfigPublic } from "@/api/modules/sysConfig";
 import { loginApi } from "@/api/modules/login";
 import { useUserStore } from "@/stores/modules/user";
 import { useTabsStore } from "@/stores/modules/tabs";
 import { useKeepAliveStore } from "@/stores/modules/keepAlive";
 import { initDynamicRouter } from "@/routers/modules/dynamicRouter";
+import type { FormInstance, FormRules } from "element-plus";
 // === 1. 状态定义 ===
 const isEyesClosedAndLeaningLeft = ref(false);
 const isPeeking = ref(false);
 const mouseX = ref(0);
 const mouseY = ref(0);
 
-// 表单数据绑定
+// 表单数据绑定（验证码仅 showCaptcha 为 true 时参与校验）
 const loginForm = reactive({
   username: "",
-  password: ""
+  password: "",
+  captcha: ""
+});
+
+const loginFormRef = ref<FormInstance>();
+const loginLoading = ref(false);
+const showCaptcha = ref(true);
+const captchaAnswer = ref("");
+
+const refreshCaptcha = () => {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  let s = "";
+  for (let i = 0; i < 4; i++) s += chars[Math.floor(Math.random() * chars.length)];
+  captchaAnswer.value = s;
+  loginForm.captcha = "";
+};
+
+const loginRules = computed<FormRules>(() => {
+  const rules: FormRules = {
+    username: [{ required: true, message: "请输入账号", trigger: "blur" }],
+    password: [{ required: true, message: "请输入密码", trigger: "blur" }]
+  };
+  if (showCaptcha.value) {
+    rules.captcha = [
+      { required: true, message: "请输入验证码", trigger: "blur" },
+      {
+        validator: (_rule, value, callback) => {
+          const v = String(value ?? "").trim();
+          if (!v) {
+            callback(new Error("请输入验证码"));
+            return;
+          }
+          if (v.toLowerCase() !== captchaAnswer.value.toLowerCase()) {
+            callback(new Error("验证码错误"));
+            return;
+          }
+          callback();
+        },
+        trigger: "blur"
+      }
+    ];
+  }
+  return rules;
+});
+
+watch(showCaptcha, val => {
+  if (val) refreshCaptcha();
+  else loginForm.captcha = "";
 });
 
 // router + pinia store 实例（给 handleLogin 使用）
@@ -152,11 +219,34 @@ const keepAliveStore = useKeepAliveStore();
 let windowCenterX = 0;
 let windowCenterY = 0;
 
-onMounted(() => {
+const defaultLogoHref = new URL("../../assets/images/logo.svg", import.meta.url).href;
+const displayName = ref((import.meta.env.VITE_GLOB_APP_TITLE as string) || "Geeker Admin");
+const logoUrl = ref(defaultLogoHref);
+
+onMounted(async () => {
   windowCenterX = window.innerWidth / 2;
   windowCenterY = window.innerHeight / 2;
   mouseX.value = windowCenterX;
   mouseY.value = windowCenterY;
+
+  try {
+    const res = await getSysConfigPublic();
+    const d = res.data;
+    if (d && typeof d === "object") {
+      const n = d.sys_app_name;
+      if (n != null && String(n).trim() !== "") displayName.value = String(n).trim();
+      const l = d.sys_logo;
+      if (l != null && String(l).trim() !== "") logoUrl.value = String(l).trim();
+      const cap = d.sys_login_captcha;
+      if (cap != null && String(cap).trim() !== "") {
+        showCaptcha.value = String(cap).trim().toLowerCase() !== "false";
+      }
+    }
+  } catch {
+    /* 网络/后端异常：沿用环境变量与默认 Logo */
+  }
+  document.title = displayName.value;
+  if (showCaptcha.value) refreshCaptcha();
 });
 
 // === 2. 交互逻辑 ===
@@ -230,21 +320,26 @@ const getPupilStyle = () => {
 
 // === 4. 提交表单 ===
 const handleLogin = async () => {
-  const username = loginForm.username.trim();
-  const password = loginForm.password;
-
-  const { data } = await loginApi({ username, password });
-
-  //  写入 Pinia/localStorage（前端 axios 拦截器会从这里取 token，自动加到 x-access-token）
-  userStore.setToken(data.access_token);
-
-  //  拉取动态菜单并添加动态路由
-  await initDynamicRouter();
-
-  //  清空 tabs/keepAlive，并跳转首页
-  await tabsStore.setTabs([]);
-  await keepAliveStore.setKeepAliveName([]);
-  router.push(HOME_URL);
+  const form = loginFormRef.value;
+  if (!form) return;
+  await form.validate(async valid => {
+    if (!valid) return;
+    loginLoading.value = true;
+    try {
+      const username = loginForm.username.trim();
+      const password = loginForm.password;
+      const { data } = await loginApi({ username, password });
+      userStore.setToken(data.access_token);
+      await initDynamicRouter();
+      await tabsStore.setTabs([]);
+      await keepAliveStore.setKeepAliveName([]);
+      router.push(HOME_URL);
+    } catch {
+      if (showCaptcha.value) refreshCaptcha();
+    } finally {
+      loginLoading.value = false;
+    }
+  });
 };
 </script>
 
@@ -421,6 +516,24 @@ const handleLogin = async () => {
 }
 
 /* === 右侧表单样式 === */
+.login-brand {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+.login-brand-logo {
+  flex-shrink: 0;
+  width: 52px;
+  height: 52px;
+  object-fit: contain;
+}
+.login-brand-title {
+  margin-bottom: 0;
+  font-size: 2rem;
+  line-height: 1.2;
+  color: var(--form-text);
+}
 .login-container {
   width: 100%;
   max-width: 440px;
@@ -434,6 +547,72 @@ h1 {
   margin-bottom: 35px;
   font-size: 0.95rem;
   color: var(--form-subtitle);
+}
+
+.login-el-form :deep(.el-form-item__label) {
+  font-weight: bold;
+  color: var(--form-text);
+}
+.password-field-wrap {
+  position: relative;
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: stretch;
+}
+.password-field-wrap :deep(.el-input) {
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
+}
+.login-el-form :deep(.el-form-item__content:has(.password-field-wrap)) {
+  width: 100%;
+  min-width: 0;
+}
+
+:deep(input:-webkit-autofill),
+:deep(input:-webkit-autofill:hover),
+:deep(input:-webkit-autofill:focus),
+:deep(input:-webkit-autofill:active) {
+  -webkit-transition-delay: 99999s !important;
+  -webkit-transition:
+    color 99999s ease-out,
+    background-color 99999s ease-out !important;
+}
+.captcha-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+.captcha-img {
+  flex-shrink: 0;
+  width: 112px;
+  height: 40px;
+  font-size: 1.1rem;
+  font-weight: bold;
+  line-height: 40px;
+  color: var(--char-purple);
+  text-align: center;
+  letter-spacing: 2px;
+  cursor: pointer;
+  user-select: none;
+  background: linear-gradient(135deg, #f0f0f0 0%, #e4e4e4 100%);
+  border: 1px solid var(--input-border);
+  border-radius: 8px;
+}
+.login-el-form :deep(.el-input__wrapper) {
+  padding: 4px 12px;
+  border-radius: 8px;
+}
+.login-el-form .btn-primary {
+  width: 100%;
+  height: auto;
+  padding: 14px;
+  margin-top: 4px;
+  font-size: 1rem;
+  font-weight: bold;
+  border: none;
+  border-radius: 8px;
 }
 
 .form-group {

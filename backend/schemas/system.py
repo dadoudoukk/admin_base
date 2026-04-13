@@ -1,6 +1,6 @@
-from typing import Optional, Union
+from typing import List, Optional, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class LoginBody(BaseModel):
@@ -72,3 +72,38 @@ class SysApiResponse(BaseModel):
     remark: str
     createTime: str
     updateTime: str
+
+
+class SysConfigCreate(BaseModel):
+    config_name: str = Field(..., min_length=1, description="配置名称")
+    config_key: str = Field(..., min_length=1, description="配置键名，唯一")
+    config_value: Optional[str] = Field(None, description="配置键值")
+    config_type: str = Field("text", min_length=1, max_length=32, description="前端渲染类型")
+    remark: Optional[str] = Field(None, description="备注")
+
+
+class SysConfigUpdate(BaseModel):
+    config_name: Optional[str] = Field(None, description="配置名称")
+    config_value: Optional[str] = Field(None, description="配置键值")
+    config_type: Optional[str] = Field(None, max_length=32, description="前端渲染类型")
+    remark: Optional[str] = Field(None, description="备注")
+
+
+class SysConfigOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    config_name: str
+    config_key: str
+    config_value: Optional[str]
+    config_type: str
+    remark: Optional[str]
+
+
+class SysConfigBatchItem(BaseModel):
+    config_key: str = Field(..., min_length=1, description="要更新的配置键名")
+    config_value: Optional[str] = Field(None, description="新键值")
+
+
+class SysConfigBatchUpdate(BaseModel):
+    items: List[SysConfigBatchItem] = Field(..., min_length=1, description="按 config_key 批量更新键值")

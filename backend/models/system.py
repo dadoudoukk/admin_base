@@ -77,3 +77,24 @@ class SysApi(SoftDeleteMixin, Base):
         nullable=False,
         comment="更新时间",
     )
+
+
+class SysConfig(SoftDeleteMixin, Base):
+    """系统全局参数（键值对）。"""
+
+    __tablename__ = "sys_config"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    config_name: Mapped[str] = mapped_column(String(128), nullable=False, comment="配置名称")
+    config_key: Mapped[str] = mapped_column(String(128), nullable=False, unique=True, index=True, comment="配置键名")
+    config_value: Mapped[Optional[str]] = mapped_column(Text, nullable=True, comment="配置键值")
+    config_type: Mapped[str] = mapped_column(String(32), nullable=False, default="text", comment="类型：text/image/boolean/number 等")
+    remark: Mapped[Optional[str]] = mapped_column(String(512), nullable=True, comment="备注")
+    create_time: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False, comment="创建时间")
+    update_time: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+        comment="更新时间",
+    )

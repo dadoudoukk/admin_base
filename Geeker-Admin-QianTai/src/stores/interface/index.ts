@@ -24,6 +24,8 @@ export interface GlobalState {
   tabs: boolean;
   tabsIcon: boolean;
   footer: boolean;
+  /** 后端系统配置键值（如 sys_app_name、sys_logo） */
+  sysConfigMap: Record<string, unknown>;
 }
 
 /* UserState */

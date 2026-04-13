@@ -9,6 +9,7 @@ from api.routers import (
     menu,
     role,
     sys_api,
+    sys_config,
     sys_log,
     upload,
     user,
@@ -25,4 +26,5 @@ router.include_router(biz_news.router)
 router.include_router(biz_fragment.router)
 router.include_router(sys_log.router)
 router.include_router(sys_api.router)
+router.include_router(sys_config.router)
 router.include_router(upload.router)

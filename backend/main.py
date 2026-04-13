@@ -29,6 +29,8 @@ logger = logging.getLogger(__name__)
 _settings = get_settings()
 DOC_PATHS = ("/docs", "/redoc", "/openapi.json")
 LOGIN_PATHS = ("/api/login",)
+# 不走鉴权与接口级限流的匿名 API（登录、登录页公开配置等；操作日志正文解析仍仅用 LOGIN_PATHS）
+ANONYMOUS_API_PATHS = ("/api/login", "/api/sys_config/public")
 
 app = FastAPI(title="接口调试")
 # 若后续增加安全响应头中间件：请勿对管理端同源 iframe 内嵌 /docs 使用 X-Frame-Options: DENY
@@ -157,8 +159,9 @@ async def oper_log_middleware(request: Request, call_next):
 
     access_token = request.headers.get("x-access-token")
     is_login_path = raw_path in LOGIN_PATHS
-    # 登录接口仍然允许匿名访问，不走鉴权拦截。
-    if cfg_exists and (not is_login_path) and bool(ctrl_cfg.get("auth_required", True)):
+    is_anonymous_path = raw_path in ANONYMOUS_API_PATHS
+    # 登录等匿名接口不走鉴权拦截。
+    if cfg_exists and (not is_anonymous_path) and bool(ctrl_cfg.get("auth_required", True)):
         ctx = await require_user(access_token)
         if not ctx:
             return JSONResponse(
@@ -170,7 +173,7 @@ async def oper_log_middleware(request: Request, call_next):
     if cfg_exists:
         qps = int(ctrl_cfg.get("rate_limit") or 0)
         # 登录接口不启用接口级限流，避免和登录专用 limiter 规则重复。
-        if (not is_login_path) and qps > 0 and not check_api_rate_limit(control_path, method, qps):
+        if (not is_anonymous_path) and qps > 0 and not check_api_rate_limit(control_path, method, qps):
             return JSONResponse(
                 status_code=429,
                 content=make_response(429, data=None, msg="请求过于频繁"),

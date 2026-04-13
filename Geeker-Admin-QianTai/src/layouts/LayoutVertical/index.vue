@@ -4,7 +4,7 @@
     <el-aside>
       <div class="aside-box" :style="{ width: isCollapse ? '65px' : '210px' }">
         <div class="logo flx-center">
-          <img class="logo-img" src="@/assets/images/logo.svg" alt="logo" />
+          <img class="logo-img" :src="logoSrc" alt="logo" />
           <span v-show="!isCollapse" class="logo-text">{{ title }}</span>
         </div>
         <el-scrollbar>
@@ -40,11 +40,11 @@ import ToolBarLeft from "@/layouts/components/Header/ToolBarLeft.vue";
 import ToolBarRight from "@/layouts/components/Header/ToolBarRight.vue";
 import SubMenu from "@/layouts/components/Menu/SubMenu.vue";
 
-const title = import.meta.env.VITE_GLOB_APP_TITLE;
-
 const route = useRoute();
 const authStore = useAuthStore();
 const globalStore = useGlobalStore();
+const title = computed(() => globalStore.displayAppTitle);
+const logoSrc = computed(() => globalStore.displayAppLogo);
 const accordion = computed(() => globalStore.accordion);
 const isCollapse = computed(() => globalStore.isCollapse);
 const menuList = computed(() => authStore.showMenuListGet);

@@ -925,6 +925,20 @@
           }
         },
         {
+          "path": "/system/systemConfig",
+          "name": "systemConfig",
+          "component": "/system/systemConfig/index",
+          "meta": {
+            "icon": "Setting",
+            "title": "全局配置",
+            "isLink": "",
+            "isHide": false,
+            "isFull": false,
+            "isAffix": false,
+            "isKeepAlive": true
+          }
+        },
+        {
           "path": "/system/apiDocs",
           "name": "apiDocs",
           "component": "/link/bing/index",
